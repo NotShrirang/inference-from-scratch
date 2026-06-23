@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.routing import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -66,12 +68,18 @@ async def generate_text_stream(request: Request, model_name: str, input_text: st
 
         async def stream_generator():
             generated_text = input_text
+            inputs = model.tokenizer(generated_text, return_tensors="pt")
+            past_key_values = None
             for _ in range(max_length):
-                outputs = model.forward(generated_text)
-                next_token_id = torch.argmax(outputs[:, -1, :], dim=-1).item()
+                inputs = inputs.to(model.device)
+                logits, past_key_values = model.forward(inputs, past_key_values=past_key_values)
+                next_token_id = torch.argmax(logits[:, -1, :], dim=-1).item()
+                inputs["input_ids"] = torch.tensor([[next_token_id]], device=model.device)
+                inputs["attention_mask"] = torch.cat([inputs["attention_mask"], torch.tensor([[1]], device=model.device)], dim=-1)
                 next_token = model.tokenizer.decode(next_token_id)
                 generated_text += next_token
                 yield f"data: {next_token}\n\n"
+                await asyncio.sleep(0)
 
         return StreamingResponse(stream_generator(), media_type="text/plain")
     except Exception as e:

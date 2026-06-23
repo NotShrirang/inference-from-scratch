@@ -225,3 +225,8 @@ __marimo__/
 *.json
 
 runs/
+
+# Benchmark artifacts are committed so the README can display them.
+!benchmarks/
+!benchmarks/*.png
+!benchmarks/*.json
