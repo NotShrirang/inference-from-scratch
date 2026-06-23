@@ -1,0 +1,1 @@
+from app.api.inference import router as inference_router
