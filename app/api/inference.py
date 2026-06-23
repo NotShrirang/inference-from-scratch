@@ -86,3 +86,18 @@ async def generate_text_stream(request: Request, model_name: str, input_text: st
         trace = traceback.format_exc()
         logger.error(f"Error streaming text generation with model '{model_name}': {trace}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/generate-batch")
+async def generate_text_batch(request: Request, model_name: str, input_texts: list[str], max_length: int = 50):
+    try:
+        model: ChatModel = request.app.state.model.get(model_name)
+        logger.info(f"Batch text generation with model '{model_name}' for inputs: {input_texts}")
+        if not model:
+            raise HTTPException(status_code=400, detail="Model not found.")
+        generated_texts = model.generate_batch(input_texts, max_length)
+        return JSONResponse(content={"generated_texts": generated_texts})
+    except Exception as e:
+        trace = traceback.format_exc()
+        logger.error(f"Error in batch text generation with model '{model_name}': {trace}")
+        raise HTTPException(status_code=500, detail=str(e))

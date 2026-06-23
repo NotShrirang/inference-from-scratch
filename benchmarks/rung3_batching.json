@@ -1,0 +1,42 @@
+[
+  {
+    "batch_size": 1,
+    "median_s": 0.6547,
+    "throughput_tok_s": 97.75,
+    "tok_s_per_seq": 97.75,
+    "errors": 0
+  },
+  {
+    "batch_size": 2,
+    "median_s": 0.8657,
+    "throughput_tok_s": 147.87,
+    "tok_s_per_seq": 73.93,
+    "errors": 0
+  },
+  {
+    "batch_size": 4,
+    "median_s": 0.7982,
+    "throughput_tok_s": 320.72,
+    "tok_s_per_seq": 80.18,
+    "errors": 0
+  },
+  {
+    "batch_size": 8,
+    "median_s": 0.8699,
+    "throughput_tok_s": 588.55,
+    "tok_s_per_seq": 73.57,
+    "errors": 0
+  },
+  {
+    "batch_size": 16,
+    "median_s": 0.8504,
+    "throughput_tok_s": 1204.2,
+    "tok_s_per_seq": 75.26,
+    "errors": 0
+  },
+  {
+    "batch_size": 32,
+    "errors": 3,
+    "sample_error": "{\"detail\":\"CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 7.66 GiB of which 9.00 MiB is free. Including non-PyTorch memory, this process has 7.57 GiB memory in use. Of "
+  }
+]

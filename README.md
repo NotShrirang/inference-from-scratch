@@ -77,3 +77,22 @@ Qwen2.5-0.5B, `max_length=64`, closed-loop sweep over concurrency 1–16.
 step. Throughput stays ~60–83 tok/s across all concurrency levels and latency
 scales roughly linearly: requests serialize on one GIL-bound forward pass with no
 batching. Bending that flat throughput line upward is the job of **rung 3**.
+
+### Rung 3 — static batching
+
+Qwen2.5-0.5B, `max_length=64`, one `/generate-batch` request per batch size (sweep 1–16).
+
+```bash
+python scripts/benchmark_batch.py --model Qwen/Qwen2.5-0.5B --load --batch-sizes 1,2,4,8,16,32
+cp bench_batch_results.json benchmarks/rung3_batching.json
+python scripts/plot_batch.py --results benchmarks/rung3_batching.json \
+    --out benchmarks/rung3_batching.png --title "Rung 3 — static batching (Qwen2.5-0.5B)"
+```
+
+![Rung 3 — static batching benchmark](benchmarks/rung3_batching.png)
+
+**Takeaways:** total throughput climbs ~12× (98 → 1204 tok/s) from batch 1 → 16
+while per-request latency stays ~0.8s — the memory-bandwidth amortization the plan
+is about: load the weights once, reuse them across many sequences. Per-sequence
+tok/s settles around ~72–77 (the price of sharing a batch). Batch 32 OOMs the
+~8 GB card (0.5B weights + 32 KV caches).
