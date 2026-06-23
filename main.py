@@ -8,7 +8,6 @@ from app.api import inference_router
 async def lifespan(app: FastAPI):
     app.state.model = {}
     yield
-    await app.state.model.clear()
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(inference_router)

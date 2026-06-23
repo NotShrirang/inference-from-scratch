@@ -7,14 +7,14 @@ from app import logger
 
 
 class ChatModel(nn.Module):
-    def __init__(self, model_name):
+    def __init__(self, model_name, device='cuda'):
         super(ChatModel, self).__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
         logger.info(f"ChatModel initialized with {model_name}")
 
     def forward(self, input_text):
-        inputs = self.tokenizer(input_text, return_tensors="pt")
+        inputs = self.tokenizer(input_text, return_tensors="pt").to(self.model.device)
         outputs = self.model(**inputs)
         return outputs.logits
 

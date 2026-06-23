@@ -47,7 +47,7 @@ async def run_level(url, model, c, dur, mt):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://localhost:8000/v1/completions")
+    ap.add_argument("--url", default="http://localhost:8000/generate/")
     ap.add_argument("--model", required=True)
     ap.add_argument("--max-tokens", type=int, default=256)
     ap.add_argument("--duration", type=float, default=30)
