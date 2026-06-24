@@ -59,10 +59,30 @@ python scripts/plot_endpoint.py \
 
 ### Workflow after each rung
 
-1. Run the benchmark, archiving the result: `--out` it, then
-   `cp bench_endpoint_results.json benchmarks/rung<N>_<name>.json`.
+1. Run the benchmark, archiving the result: `cp bench_*_results.json benchmarks/rung<N>_<name>.json`.
 2. Plot it to `benchmarks/rung<N>_<name>.png`.
-3. Tick the rung in [PROGRESS.md](PROGRESS.md) and add the plot below.
+3. Register it on the board and refresh the cross-rung comparison:
+   ```bash
+   python scripts/board.py add --rung <N> --label "Rung <N> — <name>" \
+       --results benchmarks/rung<N>_<name>.json
+   python scripts/board.py compare --out benchmarks/rung_comparison.png
+   ```
+4. Tick the rung in [PROGRESS.md](PROGRESS.md) and add the plot below.
+
+### Cross-rung comparison
+
+`scripts/board.py` keeps a persistent board (`benchmarks/board.json`) that every
+rung registers into; `compare` plots whatever's on it (throughput + latency), so
+new rungs show up automatically. N is concurrency for rung 2, batch size for rung 3:
+
+![Rung comparison — throughput and latency vs N](benchmarks/rung_comparison.png)
+
+Batching wins on **both** axes. Throughput: rung 2's concurrency line stays flat
+(~60–83 tok/s, requests serialize on one GIL-bound forward pass) while rung 3's
+batching line climbs to ~1200 tok/s (N prompts fused into one pass). Latency: rung
+2's p99 explodes to ~12.5s under concurrency (queueing) while rung 3 holds ~0.8s at
+batch 16. Same N, opposite outcomes — this is why batching, not raw concurrency, is
+the backbone of serving.
 
 ## Benchmarks
 
