@@ -9,7 +9,7 @@ under `benchmarks/`. See [README](README.md#benchmarks) for the latest plot.
 | 1 | Naive generation loop — token-by-token, no cache; measure tok/s | ✅ done | — |
 | 2 | Add a KV cache; measure the jump | ✅ done | `benchmarks/rung2_kv_cache.{json,png}` |
 | 3 | Add batching — several prompts through the loop at once | ✅ done | `benchmarks/rung3_batching.{json,png}` |
-| 4 | Quantize one layer by hand (int4 + dequant); measure | ⬜ todo | — |
+| 4 | Quantize one layer by hand (int4 + dequant); measure | ✅ done | `quntization_script.py`, `infer_quantized.py` |
 | 5 | Write one Triton kernel (fused softmax / toy attention) vs PyTorch | ⬜ todo | — |
 | 6 | Implement speculative decoding on a toy model (draft + verify) | ⬜ todo | — |
 | 7 | Read FlashAttention / vLLM paged attention with primitives built | ⬜ todo | — |
@@ -37,6 +37,20 @@ under `benchmarks/`. See [README](README.md#benchmarks) for the latest plot.
   Batch 32 OOMs on the ~8GB card.
 - Benchmark with `scripts/benchmark_batch.py` (sweeps batch size), plot with `scripts/plot_batch.py`.
 
-### Rung 4 — quantization (next)
-- Goal: quantize one layer by hand (int4 weights + dequant), measure the memory saving vs the
-  dequant overhead.
+### Rung 4 — quantization ✅
+- `quntization_script.py`: symmetric, **per-channel** weight-only quantization of every nn.Linear
+  (`QuantizedModel` swaps them in place). bits=8 stores int8; bits=4 packs two 4-bit values per
+  uint8 byte (PyTorch has no int4 dtype). `infer_quantized.py` rebuilds the skeleton + loads the
+  saved buffers (plain `from_pretrained` can't — the saved config is stock Qwen2 but the tensors
+  are custom `w_quantized`/`scale`).
+- Lessons (DeepSeek-R1-Distill-Qwen-1.5B): int8 is coherent even **per-tensor**; int4 **per-tensor
+  is word-salad** (one outlier blows up the shared scale → most weights round to 0). Switching to
+  **per-channel scales** (one per output row) made int4 coherent (toy rel-err ~1%, vs catastrophic
+  per-tensor). Output is coherent-but-lossy at int4 — semantic drift remains.
+- Memory: int4 ≈ 4× smaller than fp16; quality recoverable only with finer (per-channel/per-group)
+  scales. Neither int8 nor int4 is *faster* — dequant (+ int4 unpack) every forward. Speed needs a
+  fused kernel → rung 5. Per-group scales (AWQ/GPTQ-grade) are the natural further refinement.
+
+### Rung 5 — Triton kernel (next)
+- Goal: write one Triton kernel (fused softmax or toy attention) vs PyTorch — the first real taste
+  of the kernel level, and what would let quantized weights actually run faster.
