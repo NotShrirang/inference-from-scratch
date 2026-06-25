@@ -1,18 +1,39 @@
 # Progress
 
-Tracking the 7-rung ladder in [plan.md](plan.md). Each rung gets a benchmark run
-(`scripts/benchmark_endpoint.py`) and a plot (`scripts/plot_endpoint.py`) archived
-under `benchmarks/`. See [README](README.md#benchmarks) for the latest plot.
+Tracking the [ladder in plan.md](plan.md). **Build track** = optimizations integrated into the
+FastAPI server, each benchmarked on the board. **Read & interview track** = kernel/theory/hardware-
+limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks) for plots.
+
+## Build track
 
 | # | Rung | Status | Artifact |
 |---|------|--------|----------|
-| 1 | Naive generation loop — token-by-token, no cache; measure tok/s | ✅ done | — |
-| 2 | Add a KV cache; measure the jump | ✅ done | `benchmarks/rung2_kv_cache.{json,png}` |
-| 3 | Add batching — several prompts through the loop at once | ✅ done | `benchmarks/rung3_batching.{json,png}` |
-| 4 | Quantize one layer by hand (int4 + dequant); measure | ✅ done | `quntization_script.py`, `infer_quantized.py` |
-| 5 | Write one Triton kernel (fused softmax / toy attention) vs PyTorch | ⬜ todo | — |
-| 6 | Implement speculative decoding on a toy model (draft + verify) | ⬜ todo | — |
-| 7 | Read FlashAttention / vLLM paged attention with primitives built | ⬜ todo | — |
+| 1 | Naive generation loop — `/generate` | ✅ done | — |
+| 2 | KV cache + real streaming — `/generate-stream` | ✅ done | `benchmarks/rung2_kv_cache.{json,png}` |
+| 3 | Static batching — `/generate-batch` | ✅ done | `benchmarks/rung3_batching.{json,png}` |
+| 4 | Continuous / in-flight batching (scheduler + queue) | ⬜ **next** | — |
+| 5 | Paged / block KV cache (block allocator) | ⬜ todo | — |
+| 6 | Prefix caching (shared-prefix KV reuse) | ⬜ todo | — |
+| 7 | Speculative decoding (draft + verify) | ⬜ todo | — |
+| 8 | Scheduling & admission control (priorities, chunked prefill) | ⬜ todo | — |
+| 9 | Serve a quantized model (library quant + KV quant via `/load`) | ⬜ todo | — |
+| 10 | Attention-variant model swap (GQA/MQA, sliding window) | ⬜ todo | — |
+| 11 | Compilation (`torch.compile` + CUDA graphs) | ⬜ todo | — |
+| 12 | Observability & SLO tuning (prometheus + Pareto/goodput) | ⬜ todo | — |
+| 13 | Structured / guided decoding (JSON/grammar) | ⬜ todo | — |
+| 14 | OpenAI-compatible API | ⬜ todo | — |
+| 15 | Capstone — benchmark vs vLLM on the board | ⬜ todo | — |
+
+## Read & interview track (Claude quizzes me — no code)
+
+| Topic | Status |
+|-------|--------|
+| Quantization theory (per-group, GPTQ/AWQ/SmoothQuant, FP8) | ⬜ — built int4 by hand (`quntization_script.py`), own the theory |
+| GPU kernels & Triton (fused attention, dequant-matmul, FlashAttention) | ⬜ — built fused softmax (`softmax_kernel.py`, ~parity) |
+| Roofline (arithmetic intensity, BW vs compute bound) | ⬜ todo |
+| PagedAttention / FlashAttention internals | ⬜ todo |
+| Parallelism (TP/PP/EP, multi-node) — hardware-limited | ⬜ todo |
+| Model-level (distillation, pruning, MoE) | ⬜ todo |
 
 ## Notes per rung
 
@@ -47,10 +68,30 @@ under `benchmarks/`. See [README](README.md#benchmarks) for the latest plot.
   is word-salad** (one outlier blows up the shared scale → most weights round to 0). Switching to
   **per-channel scales** (one per output row) made int4 coherent (toy rel-err ~1%, vs catastrophic
   per-tensor). Output is coherent-but-lossy at int4 — semantic drift remains.
-- Memory: int4 ≈ 4× smaller than fp16; quality recoverable only with finer (per-channel/per-group)
-  scales. Neither int8 nor int4 is *faster* — dequant (+ int4 unpack) every forward. Speed needs a
-  fused kernel → rung 5. Per-group scales (AWQ/GPTQ-grade) are the natural further refinement.
+- Benchmark (DeepSeek-R1-Distill-Qwen-1.5B, 128 tokens, `benchmark_quantized.py`):
 
-### Rung 5 — Triton kernel (next)
-- Goal: write one Triton kernel (fused softmax or toy attention) vs PyTorch — the first real taste
-  of the kernel level, and what would let quantized weights actually run faster.
+  | variant | stored weights | peak VRAM | tok/s |
+  |--------:|------:|------:|------:|
+  | fp16 | 3554 MB | 3570 MB | 82.3 |
+  | int8 | 2247 MB | 2436 MB | 12.8 |
+  | int4 | 1591 MB | 1740 MB | 7.4 |
+
+  - **Speed collapsed, not improved**: int8 6.4× slower, int4 11× slower than fp16. Naive dequant
+    rebuilds the full fp weight (+ int4 unpack) every forward in eager PyTorch — that dwarfs the
+    decode matmul. The "dequant eats the savings" lesson, in full.
+  - **Memory dropped only ~2.2× (not 4×)**: embeddings + lm_head stay bf16 (not nn.Linear / skipped)
+    and form a large floor for this 150k-vocab model. Peak VRAM ≈ stored size — the dequant transient
+    is one layer at a time, freed after each.
+  - Quality recoverable only with finer (per-channel/per-group) scales; speed needs a fused kernel
+    → rung 5. Per-group scales (AWQ/GPTQ-grade) are the natural further refinement.
+
+### Standalone experiments (done, now off the build path)
+- **Quantization** (`quntization_script.py`, `infer_quantized.py`) — per-channel int8/int4 by hand.
+  Theory moved to the read/interview track; future quant work is server-integrated (build rung 9).
+- **Triton fused softmax** (`softmax_kernel.py`) — correct, ~parity with `torch.softmax` (matching a
+  tuned library kernel is the win). Kernel topics now live in the read/interview track.
+
+### Build rung 4 — continuous batching (next)
+- Goal: a background scheduler + request queue that merges independent in-flight `/generate-stream`
+  requests into a rolling batch (admit on arrival, step together, evict on EOS). Should bend the flat
+  concurrency curve from rung 2 upward — re-run `scripts/benchmark_endpoint.py` and compare on the board.

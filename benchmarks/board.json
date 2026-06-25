@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "rung": 2,
+      "label": "Rung 2 \u2014 KV cache",
+      "results": "benchmarks/rung2_kv_cache.json",
+      "x_key": "concurrency"
+    },
+    {
+      "rung": 3,
+      "label": "Rung 3 \u2014 static batching",
+      "results": "benchmarks/rung3_batching.json",
+      "x_key": "batch_size"
+    }
+  ]
+}

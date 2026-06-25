@@ -230,3 +230,7 @@ runs/
 !benchmarks/
 !benchmarks/*.png
 !benchmarks/*.json
+
+# Quantized model weights and checkpoints — large (~GB), never commit.
+deepseek-ai/
+models/

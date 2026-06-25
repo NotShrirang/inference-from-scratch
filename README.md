@@ -116,3 +116,29 @@ while per-request latency stays ~0.8s — the memory-bandwidth amortization the 
 is about: load the weights once, reuse them across many sequences. Per-sequence
 tok/s settles around ~72–77 (the price of sharing a batch). Batch 32 OOMs the
 ~8 GB card (0.5B weights + 32 KV caches).
+
+### Rung 4 — quantization (memory vs speed)
+
+By-hand symmetric per-channel weight-only quantization of every `nn.Linear`
+(`quntization_script.py`); int8 stored directly, int4 packed two-per-byte.
+Measured on DeepSeek-R1-Distill-Qwen-1.5B, 128 tokens (`benchmark_quantized.py`):
+
+```bash
+python benchmark_quantized.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B --variants fp16,int8,int4
+python scripts/plot_quantized.py --results benchmarks/rung4_quantization.json
+```
+
+![Rung 4 — quantization memory vs speed](benchmarks/rung4_quantization.png)
+
+| variant | stored weights | peak VRAM | tok/s |
+|--------:|------:|------:|------:|
+| fp16 | 3554 MB | 3570 MB | 82.3 |
+| int8 | 2247 MB | 2436 MB | 12.8 |
+| int4 | 1591 MB | 1740 MB | 7.4 |
+
+**Takeaways:** this is a deliberate *negative* result. Memory falls (~2.2× at int4 —
+capped because the bf16 embeddings/lm_head are a large floor for a 150k-vocab model),
+but **decode gets dramatically slower** (int8 6.4×, int4 11×): naive dequant rebuilds
+the full fp weight (and unpacks int4) every forward in eager PyTorch, dwarfing the
+matmul. Quantization is a *memory* win, not a speed win — until the dequant is fused
+into the matmul kernel, which is exactly **rung 5**.
