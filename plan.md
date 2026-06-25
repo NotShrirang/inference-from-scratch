@@ -4,7 +4,7 @@ Philosophy: build each optimization **into the FastAPI server** (`app/`), measur
 the benchmark board, then read the paper that formalizes it. Own the primitive before the name.
 
 Two tracks:
-- **Build track** — every rung changes the server and is benchmarked. No standalone scripts.
+- **Build track** — every step changes the server and is benchmarked. No standalone scripts.
 - **Read & interview track** — kernel-level, hardware-limited, or theory-heavy topics that don't
   belong in the server (or can't run on one 8 GB GPU). No code — Claude interviews me to check I
   actually understand them.
@@ -21,7 +21,7 @@ Hardware: single ~8 GB GPU; small softmax-attention models (Qwen2.5-0.5B, etc.).
 4. **Continuous / in-flight batching** — a background scheduler + request queue that merges
    independent in-flight requests into a rolling batch: admit on arrival, step all active
    sequences together, evict on EOS, stream each out. The single biggest serving win — turns the
-   flat concurrency curve from rung 2 into a climbing one.
+   flat concurrency curve from step 2 into a climbing one.
 5. **Paged / block KV cache** — a block allocator (fixed-size blocks + free list) in the model
    manager so the cache stops fragmenting and more sequences fit. PagedAttention's *idea*, in Python.
 6. **Prefix caching** — detect shared prompt prefixes (e.g. a common system prompt) across requests
@@ -61,7 +61,7 @@ Claude tests my understanding instead of me building them.
   the FlashAttention tiling/online-softmax trick.
 - **Roofline model** — arithmetic intensity, memory-bandwidth vs compute bound, why decode is
   bandwidth-bound and prefill is compute-bound.
-- **PagedAttention & FlashAttention internals** — the kernel mechanics under rungs 5 and the attention path.
+- **PagedAttention & FlashAttention internals** — the kernel mechanics under steps 5 and the attention path.
 - **Parallelism** *(hardware-limited: 1 GPU)* — tensor / pipeline / expert parallelism, multi-node,
   prefill/decode disaggregation.
 - **Model-level** — distillation (running a distilled model already), pruning/sparsity, MoE serving,
@@ -69,13 +69,13 @@ Claude tests my understanding instead of me building them.
 
 ---
 
-## Papers (read once the matching rung is built)
+## Papers (read once the matching step is built)
 
-- Orca — continuous batching → rung 4
-- vLLM / PagedAttention → rungs 5–6
-- Speculative decoding; Medusa / EAGLE → rung 7
-- AWQ / GPTQ / SmoothQuant → rung 9
-- GQA → rung 10
+- Orca — continuous batching → step 4
+- vLLM / PagedAttention → steps 5–6
+- Speculative decoding; Medusa / EAGLE → step 7
+- AWQ / GPTQ / SmoothQuant → step 9
+- GQA → step 10
 - FlashAttention → kernel (interview) track
 
 ---
@@ -83,5 +83,5 @@ Claude tests my understanding instead of me building them.
 ## Parked: standalone experiments already done
 
 Kept for reference, but off the main (server) path:
-- `quntization_script.py` + `infer_quantized.py` — by-hand int8/int4 weight quantization (rung-4 era).
+- `quntization_script.py` + `infer_quantized.py` — by-hand int8/int4 weight quantization (step-4 era).
 - `softmax_kernel.py` — Triton fused softmax, ~parity with `torch.softmax`.

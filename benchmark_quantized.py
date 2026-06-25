@@ -1,9 +1,9 @@
-"""Benchmark fp16 vs int8 vs int4 (rung 4): weight size, peak VRAM, decode tok/s.
+"""Benchmark fp16 vs int8 vs int4: weight size, peak VRAM, decode tok/s.
 
 The point of this benchmark is the *negative* result: int8/int4 shrink stored
 weights and VRAM, but decode does NOT get faster — every forward dequantizes (and
 int4 also unpacks) on the fly, so latency is flat or worse. That gap is what a
-fused kernel (rung 5) exists to close.
+fused kernel exists to close.
 
 Each variant is built, measured, then freed before the next so all three fit in
 ~8 GB. fp16 is the baseline (no quantization).
@@ -72,7 +72,7 @@ def main():
     ap.add_argument("--variants", default="fp16,int8,int4")
     ap.add_argument("--max-new-tokens", type=int, default=128)
     ap.add_argument("--reps", type=int, default=3)
-    ap.add_argument("--out", default="benchmarks/rung4_quantization.json")
+    ap.add_argument("--out", default="benchmarks/step4_quantization.json")
     a = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

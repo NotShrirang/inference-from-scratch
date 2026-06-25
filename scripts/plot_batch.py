@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Plot a benchmark_batch.py result into a 2-panel figure: throughput and
 per-request latency vs batch size. The throughput curve climbing then flattening
-is the rung-3 payoff (memory-bandwidth amortization).
+is the step-3 payoff (memory-bandwidth amortization).
 
 Usage:
     python scripts/plot_batch.py \
-        --results benchmarks/rung3_batching.json \
-        --out benchmarks/rung3_batching.png \
-        --title "Rung 3 — static batching (Qwen2.5-0.5B)"
+        --results benchmarks/step3_batching.json \
+        --out benchmarks/step3_batching.png \
+        --title "Step 3 — static batching (Qwen2.5-0.5B)"
 """
 import argparse
 import json

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Plot benchmark_quantized.py results: memory and decode speed per variant.
 
-Two panels make the rung-4 point: memory bars fall sharply fp16 -> int8 -> int4,
+Two panels make the quantization point: memory bars fall sharply fp16 -> int8 -> int4,
 while the tok/s bars do NOT rise (the dequant/unpack tax). Memory win, no speed win.
 
 Usage:
-    python scripts/plot_quantized.py --results benchmarks/rung4_quantization.json \
-        --out benchmarks/rung4_quantization.png
+    python scripts/plot_quantized.py --results benchmarks/step4_quantization.json \
+        --out benchmarks/step4_quantization.png
 """
 import argparse
 import json
@@ -19,9 +19,9 @@ import matplotlib.pyplot as plt
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results", default="benchmarks/rung4_quantization.json")
-    ap.add_argument("--out", default="benchmarks/rung4_quantization.png")
-    ap.add_argument("--title", default="Rung 4 — quantization: memory vs speed")
+    ap.add_argument("--results", default="benchmarks/step4_quantization.json")
+    ap.add_argument("--out", default="benchmarks/step4_quantization.png")
+    ap.add_argument("--title", default="Step 4 — quantization: memory vs speed")
     ap.add_argument("--dpi", type=int, default=120)
     a = ap.parse_args()
 

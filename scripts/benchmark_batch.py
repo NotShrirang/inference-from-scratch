@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark /generate-batch: throughput vs batch size (static batching, rung 3).
+"""Benchmark /generate-batch: throughput vs batch size (static batching, step 3).
 
 Unlike the streaming benchmark (which sweeps concurrency), this sends a single
 request of N prompts and sweeps N. The endpoint is non-streaming, so the metric

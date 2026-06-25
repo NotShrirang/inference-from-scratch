@@ -3,7 +3,7 @@
 
 Reads the JSON rows emitted by scripts/benchmark_endpoint.py (a list of
 per-concurrency-level dicts) and draws the four curves that matter for the
-inference-optimization ladder:
+inference-optimization ladder (one step's result):
 
   1. throughput (tok/s)  vs concurrency  — does adding load buy throughput?
   2. TTFT p50/p95        vs concurrency  — time to first token (prefill cost)
@@ -12,9 +12,9 @@ inference-optimization ladder:
 
 Usage:
     python scripts/plot_endpoint.py \
-        --results benchmarks/rung2_kv_cache.json \
-        --out benchmarks/rung2_kv_cache.png \
-        --title "Rung 2 — KV cache (Qwen2.5-0.5B)"
+        --results benchmarks/step2_kv_cache.json \
+        --out benchmarks/step2_kv_cache.png \
+        --title "Step 2 — KV cache (Qwen2.5-0.5B)"
 """
 import argparse
 import json
