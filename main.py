@@ -1,12 +1,12 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
-import httpx
+from fastapi import FastAPI
 
 from app.api import inference_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.model = {}
+    app.state.engine = {}
     yield
 
 app = FastAPI(lifespan=lifespan)

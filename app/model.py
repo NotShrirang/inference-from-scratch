@@ -4,31 +4,38 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from app import logger
+from app.api.utils import sample_next_token
 
 
 class ChatModel(nn.Module):
     def __init__(self, model_name, device='cuda'):
         super(ChatModel, self).__init__()
+        self.model_name = model_name
         self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+        self.pad_token = int(self.tokenizer(self.tokenizer.pad_token, return_tensors="pt").input_ids[0][0].item()) if self.tokenizer.pad_token else None
+        self.eos_token = int(self.tokenizer(self.tokenizer.eos_token, return_tensors="pt").input_ids[0][0].item()) if self.tokenizer.eos_token else None
         logger.info(f"ChatModel initialized with {model_name}")
+
+    def __str__(self):
+        return f"ChatModel({self.model_name})"
 
     def forward(self, inputs, past_key_values=None):
         # inputs = self.tokenizer(input_text, return_tensors="pt").to(self.model.device)
         outputs = self.model(**inputs, past_key_values=past_key_values, use_cache=True)
         return outputs.logits, outputs.past_key_values
 
-    def generate(self, x, max_length=50):
+    def generate(self, x, max_length=50, temperature=0.6, top_p=0.9):
         past_key_values = None
         for _ in range(max_length):
             logits, past_key_values = self.forward(x, past_key_values=past_key_values)
-            next_token_id = torch.argmax(logits[:, -1, :], dim=-1).item()
+            next_token_id = sample_next_token(logits[:, -1, :], temperature=temperature, top_p=top_p).item()
             x += self.tokenizer.decode(next_token_id)
             logger.info(f"Generated so far: {x}")
         return x
     
-    def generate_batch(self, x_batch, max_length=50):
+    def generate_batch(self, x_batch, max_length=50, temperature=0.6, top_p=0.9):
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -38,7 +45,7 @@ class ChatModel(nn.Module):
         past_key_values = None
         for _ in range(max_length):
             logits, past_key_values = self.forward(cur, past_key_values=past_key_values)
-            next_ids = torch.argmax(logits[:, -1, :], dim=-1)
+            next_ids = sample_next_token(logits[:, -1, :], temperature=temperature, top_p=top_p)
             for i, tid in enumerate(next_ids.tolist()):
                 out_ids[i].append(tid)
             attn = torch.cat(

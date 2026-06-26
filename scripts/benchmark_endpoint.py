@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark the streaming /generate-stream endpoint (app/api/inference.py).
+"""Benchmark a streaming endpoint (app/api/inference.py).
 
 The endpoint streams one Server-Sent-Event per token as `data: <token>\\n\\n`
 (media_type text/plain) and ends when the greedy loop has emitted `max_length`
@@ -25,13 +25,26 @@ Usage:
 import argparse
 import asyncio
 import json
+import random
 import statistics
 import time
 
 import httpx
 
-PROMPT = "Explain how a KV cache speeds up autoregressive decoding."  # fixed for fair comparison
-
+# Varied-length prompts; each request picks one at random. The length spread
+# exercises ragged batching (different prompt lengths sharing a batch).
+PROMPTS = [
+    "What is a KV cache?",
+    "Explain how continuous batching improves LLM serving throughput.",
+    "Write a haiku about GPUs.",
+    "List three techniques to reduce LLM inference latency.",
+    "Why is autoregressive decoding memory-bandwidth bound rather than compute bound?",
+    "Summarize the difference between the prefill and decode phases of inference.",
+    "Describe weight quantization in one short paragraph.",
+    "What problem does PagedAttention solve, and how?",
+    "Give a short analogy that explains speculative decoding.",
+    "How does batching amortize the cost of loading model weights from VRAM?",
+]
 
 def percentile(xs, p):
     """Linear-interpolated percentile over a list (stdlib only)."""
@@ -54,9 +67,9 @@ async def load_model(base, model):
         print(f"[load] {r.json().get('message')}")
 
 
-async def one_request(client, base, model, max_length):
-    """Stream a single /generate-stream call; capture TTFT, TPOT, e2e, token count."""
-    params = {"model_name": model, "input_text": PROMPT, "max_length": max_length}
+async def one_request(client, base, endpoint, model, max_length):
+    """Stream a single endpoint call; capture TTFT, TPOT, e2e, token count."""
+    params = {"model_name": model, "input_text": random.choice(PROMPTS), "max_length": max_length}
     t0 = time.perf_counter()
     ttft = None
     last = t0
@@ -65,7 +78,7 @@ async def one_request(client, base, model, max_length):
     ok = False
     err = None
     try:
-        async with client.stream("POST", f"{base}/generate-stream", params=params) as r:
+        async with client.stream("POST", f"{base}/{endpoint}", params=params) as r:
             ok = r.status_code == 200
             if not ok:
                 await r.aread()
@@ -96,12 +109,12 @@ async def one_request(client, base, model, max_length):
     }
 
 
-async def worker(client, base, model, max_length, stop, res):
+async def worker(client, base, endpoint, model, max_length, stop, res):
     while time.perf_counter() < stop:
-        res.append(await one_request(client, base, model, max_length))
+        res.append(await one_request(client, base, endpoint, model, max_length))
 
 
-async def run_level(base, model, concurrency, duration, max_length):
+async def run_level(base, endpoint, model, concurrency, duration, max_length):
     res = []
     limits = httpx.Limits(
         max_connections=concurrency * 2, max_keepalive_connections=concurrency * 2
@@ -110,7 +123,7 @@ async def run_level(base, model, concurrency, duration, max_length):
         t = time.perf_counter()
         stop = t + duration
         await asyncio.gather(
-            *[worker(client, base, model, max_length, stop, res) for _ in range(concurrency)]
+            *[worker(client, base, endpoint, model, max_length, stop, res) for _ in range(concurrency)]
         )
         wall = time.perf_counter() - t
 
@@ -139,18 +152,19 @@ async def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--base", default="http://localhost:8000", help="server base URL")
+    ap.add_argument("--endpoint", default="generate-stream", help="endpoint to benchmark")
     ap.add_argument("--model", required=True, help="model_name passed to the endpoint")
     ap.add_argument("--load", action="store_true", help="call /load before sweeping")
     ap.add_argument("--max-length", type=int, default=64)
     ap.add_argument("--duration", type=float, default=20, help="seconds per concurrency level")
-    ap.add_argument("--levels", default="1,2,4,8,16", help="comma-separated concurrency levels")
+    ap.add_argument("--levels", default="1,2,4,8,16,32,64,128,256", help="comma-separated concurrency levels")
     ap.add_argument("--out", default="bench_endpoint_results.json")
     a = ap.parse_args()
 
     if a.load:
         await load_model(a.base, a.model)
 
-    url = f"{a.base}/generate-stream"
+    url = f"{a.base}/{a.endpoint}"
     rows = []
     hdr = (
         f"{'conc':>5} {'req/s':>7} {'tok/s':>9} "
@@ -162,7 +176,7 @@ async def main():
     print(hdr)
     print("-" * len(hdr))
     for c in (int(x) for x in a.levels.split(",")):
-        row = await run_level(a.base, a.model, c, a.duration, a.max_length)
+        row = await run_level(a.base, a.endpoint, a.model, c, a.duration, a.max_length)
         rows.append(row)
         print(
             f"{row['concurrency']:>5} {row['req_per_s']:>7.2f} {row['throughput_tok_s']:>9.1f} "

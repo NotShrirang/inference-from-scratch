@@ -73,16 +73,18 @@ python scripts/plot_endpoint.py \
 
 `scripts/board.py` keeps a persistent board (`benchmarks/board.json`) that every
 step registers into; `compare` plots whatever's on it (throughput + latency), so
-new steps show up automatically. N is concurrency for step 2, batch size for step 3:
+new steps show up automatically. N is concurrency for steps 2 & 4, batch size for step 3:
 
 ![Step comparison — throughput and latency vs N](benchmarks/step_comparison.png)
 
-Batching wins on **both** axes. Throughput: step 2's concurrency line stays flat
-(~60–83 tok/s, requests serialize on one GIL-bound forward pass) while step 3's
-batching line climbs to ~1200 tok/s (N prompts fused into one pass). Latency: step
-2's p99 explodes to ~12.5s under concurrency (queueing) while step 3 holds ~0.8s at
-batch 16. Same N, opposite outcomes — this is why batching, not raw concurrency, is
-the backbone of serving.
+The apples-to-apples comparison is **step 2 vs step 4** (both sweep live concurrency).
+Step 2 (per-request) stays flat (~86 tok/s) and its p99 latency explodes to ~12s under
+load. **Step 4 (continuous batching) climbs to ~389 tok/s and saturates at the
+`batch_size=16` knee**, with TPOT flat across the whole sweep — same live concurrency,
+batched forward passes. Step 3 (static batching) climbs highest (~1200 tok/s)
+but it isn't directly comparable: its N is *batch size* in a single offline request (perfect
+packing, no scheduling), i.e. the throughput ceiling, whereas step 4 is what you actually get
+serving independent live requests (and is currently capped by the engine's `batch_size`).
 
 ## Benchmarks
 
@@ -116,6 +118,29 @@ while per-request latency stays ~0.8s — the memory-bandwidth amortization the 
 is about: load the weights once, reuse them across many sequences. Per-sequence
 tok/s settles around ~72–77 (the price of sharing a batch). Batch 32 OOMs the
 ~8 GB card (0.5B weights + 32 KV caches).
+
+### Step 4 — continuous batching
+
+One background engine (`app/batching/engine.py`) merges live in-flight requests into a
+rolling batch. Concurrency sweep against `/generate-continuous-batch`:
+
+```bash
+python scripts/benchmark_endpoint.py --model Qwen/Qwen2.5-0.5B --load \
+    --endpoint generate-continuous-batch
+cp bench_endpoint_results.json benchmarks/step4_continuous_batching.json
+python scripts/plot_endpoint.py --results benchmarks/step4_continuous_batching.json \
+    --out benchmarks/step4_continuous_batching.png --title "Step 4 — continuous batching (Qwen2.5-0.5B)"
+```
+
+![Step 4 — continuous batching benchmark](benchmarks/step4_continuous_batching.png)
+
+**Takeaways:** the canonical serving curve. Throughput **climbs to the knee at concurrency =
+`batch_size` (16), reaching ~389 tok/s, then saturates flat (~383)** as the GPU is fully fed.
+**TPOT stays ~0.02s across the whole sweep (conc 1 → 256)** — constant per-token cost once a
+request is batched, vs step 2's 14× blow-up. TTFT is ~0.08s until the knee, then grows linearly
+(→25s at conc 256) as requests queue for a slot. So past the knee you buy only latency, not
+throughput — the SLO operating point is ≈ the knee. (At concurrency 1, CB is slightly slower
+than step 2: engine overhead with no batch to amortize.)
 
 ### Quantization (standalone experiment — memory vs speed)
 

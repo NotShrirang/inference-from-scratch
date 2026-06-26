@@ -11,8 +11,8 @@ limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks
 | 1 | Naive generation loop — `/generate` | ✅ done | — |
 | 2 | KV cache + real streaming — `/generate-stream` | ✅ done | `benchmarks/step2_kv_cache.{json,png}` |
 | 3 | Static batching — `/generate-batch` | ✅ done | `benchmarks/step3_batching.{json,png}` |
-| 4 | Continuous / in-flight batching (scheduler + queue) | ⬜ **next** | — |
-| 5 | Paged / block KV cache (block allocator) | ⬜ todo | — |
+| 4 | Continuous / in-flight batching (scheduler + queue) | ✅ done | `app/batching/engine.py`, `benchmarks/step4_continuous_batching.{json,png}` |
+| 5 | Paged / block KV cache (block allocator) | ⬜ **next** | — |
 | 6 | Prefix caching (shared-prefix KV reuse) | ⬜ todo | — |
 | 7 | Speculative decoding (draft + verify) | ⬜ todo | — |
 | 8 | Scheduling & admission control (priorities, chunked prefill) | ⬜ todo | — |
@@ -58,10 +58,29 @@ limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks
   Batch 32 OOMs on the ~8GB card.
 - Benchmark with `scripts/benchmark_batch.py` (sweeps batch size), plot with `scripts/plot_batch.py`.
 
-### Step 4 — continuous / in-flight batching (next)
-- Goal: a background scheduler + request queue that merges independent in-flight `/generate-stream`
-  requests into a rolling batch (admit on arrival, step together, evict on EOS). Should bend the flat
-  concurrency curve from step 2 upward — re-run `scripts/benchmark_endpoint.py` and compare on the board.
+### Step 4 — continuous / in-flight batching ✅
+- `app/batching/engine.py`: one background loop owns the model; requests submit to a queue and stream
+  tokens out via a per-request `asyncio.Queue`. Cache strategy = **recompute-on-rebatch**: pure decode
+  steps reuse a merged KV cache; membership changes (admit/evict) set `dirty` → re-prefill over the
+  active set's *full* sequences (no DynamicCache surgery). Endpoint: `/generate-continuous-batch`.
+- Result (Qwen2.5-0.5B, sampling) vs step-2 baseline, concurrency sweep @ conc 16:
+
+  | metric @ conc 16 | step 2 (per-request) | step 4 (continuous batch, batch_size=16) |
+  |--------|------:|------:|
+  | throughput | 86 tok/s (flat) | 389 tok/s (climbs ~8.3×) |
+  | TPOT p95 | 0.179 s | 0.019 s (flat at every conc) |
+  | e2e p99 | 12.1 s | 2.3 s |
+
+  - Canonical serving curve (random varied prompts, conc swept 1→256): throughput **climbs to the knee
+    at conc = batch_size (16) then saturates flat at ~383 tok/s**; **TPOT stays ~0.02s across the entire
+    range** (constant per-token cost once batched); TTFT/e2e are low until the knee, then grow ~linearly
+    as requests queue for a slot (TTFT 0.08s → 25s at conc 256). Lesson: past the knee you buy only
+    latency, no throughput — SLO operating point ≈ the knee.
+  - At concurrency 1 CB is slightly *slower* (47 vs 86 tok/s) — engine overhead with no batch to amortize.
+  - Bug trail that got it working: persist the cache across steps; grow the attn mask once per step
+    (guarded, skip after eviction); set `padding_side` on the tokenizer; finish on *generated* count;
+    re-prefill from full `req.tokens` (not the prompt) so rebatch keeps context; sampling (not argmax)
+    to avoid the base model's greedy echo.
 
 ## Standalone experiments (done, off the build path)
 

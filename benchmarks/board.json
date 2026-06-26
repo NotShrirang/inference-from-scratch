@@ -2,15 +2,21 @@
   "entries": [
     {
       "step": 2,
-      "label": "Step 2 — KV cache",
+      "label": "Step 2 \u2014 KV cache",
       "results": "benchmarks/step2_kv_cache.json",
       "x_key": "concurrency"
     },
     {
       "step": 3,
-      "label": "Step 3 — static batching",
+      "label": "Step 3 \u2014 static batching",
       "results": "benchmarks/step3_batching.json",
       "x_key": "batch_size"
+    },
+    {
+      "step": 4,
+      "label": "Step 4 \u2014 continuous batching",
+      "results": "benchmarks/step4_continuous_batching.json",
+      "x_key": "concurrency"
     }
   ]
 }
