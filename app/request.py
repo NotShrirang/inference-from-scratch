@@ -27,7 +27,6 @@ class InferenceRequest:
         self.prompt = str(prompt)
         self.prompt_tokens = prompt_tokens
         self.prompt_len = prompt_len
-        self.prompt_len = 0
         self.tokens = tokens
         self.temperature = temperature
         self.top_p = top_p

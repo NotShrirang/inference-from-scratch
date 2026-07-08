@@ -1,14 +1,13 @@
-import typing
-from datetime import datetime
 import asyncio
+from datetime import datetime
+import torch
+import typing
 import uuid
 
-import torch
-
+from app import logger
 from app.api.utils import sample_next_token
 from app.model import ChatModel
 from app.request import InferenceRequest
-from app import logger
 
 class ContinuousBatchingEngine:
     def __init__(self, model: ChatModel, batch_size: int = 4, max_length: int = 50):
@@ -16,6 +15,7 @@ class ContinuousBatchingEngine:
         self.model = model
         self.batch_size = batch_size
         self.max_length = max_length
+        self.max_waiting_requests = 4 * self.batch_size
         self.waiting_requests: typing.List[InferenceRequest] = []
         self.active_requests: typing.List[InferenceRequest] = []
         self.attn_mask = None
@@ -48,7 +48,7 @@ class ContinuousBatchingEngine:
         ).to(self.model.device)
 
     def _prefill(self) -> torch.Tensor:
-        logger.info(f"Prefilling for {self.active_requests_count} active requests.")
+        # logger.info(f"Prefilling for {self.active_requests_count} active requests.")
         # left pad every active reqs full tokens to max length; req.tokens is a list of token ids
         maxlen = max(len(req.tokens) for req in self.active_requests)
         padded_tokens = [
@@ -61,12 +61,12 @@ class ContinuousBatchingEngine:
 
         self.attn_mask = inputs["attention_mask"]
 
-        logger.info(f"Forward pass for {self.active_requests_count} active requests.")
+        # logger.info(f"Forward pass for {self.active_requests_count} active requests.")
         logits, past_key_values = self.model.forward(inputs)
         return logits, past_key_values
     
     def _decode(self, past_key_values) -> typing.Tuple[torch.Tensor, typing.Any]:
-        logger.info(f"Decoding for {self.active_requests_count} active requests.")
+        # logger.info(f"Decoding for {self.active_requests_count} active requests.")
         # feed the last token and kv cache of each active request to the model
         last_tokens = torch.tensor(
             [[req.tokens[-1]] for req in self.active_requests],
@@ -77,6 +77,8 @@ class ContinuousBatchingEngine:
         return logits, past_key_values
 
     async def submit(self, prompt: str, max_new_tokens: int, temperature: float = 0.6, top_p: float = 0.9) -> InferenceRequest:
+        if self.waiting_requests_count >= self.max_waiting_requests:
+            raise RuntimeError(f"Too many waiting requests ({self.waiting_requests_count}). Please try again later.")
         logger.info(f"Submitting new request with prompt: {prompt[:10]} and max_new_tokens: {max_new_tokens}")
         inputs = self._tokenize_prompts(prompt)
         request = InferenceRequest(
@@ -113,7 +115,7 @@ class ContinuousBatchingEngine:
                 while self.active_requests_count < self.batch_size and self.waiting_requests:
                     request = self.waiting_requests.pop(0)
                     request.update_status("active")
-                    logger.info(f"Moving request {request.request_id} to active requests.")
+                    # logger.info(f"Moving request {request.request_id} to active requests.")
                     self.active_requests.append(request)
                     self.dirty = True
 
@@ -134,27 +136,26 @@ class ContinuousBatchingEngine:
         
         # prefill if self.dirty, else decode
         if self.dirty:
-            logger.info(f"Dirty flag is set. Prefilling for active requests.")
+            # logger.info(f"Dirty flag is set. Prefilling for active requests.")
             logits, past_key_values = self._prefill()
             self.past_key_values = past_key_values
             self.dirty = False
         else:
-            logger.info(f"Dirty flag is not set. Decoding for active requests.")
+            # logger.info(f"Dirty flag is not set. Decoding for active requests.")
             logits, past_key_values = self._decode(self.past_key_values)
             self.past_key_values = past_key_values
-
 
         for i, request in enumerate(self.active_requests):
             next_ids = sample_next_token(logits[i, -1, :], temperature=request.temperature, top_p=request.top_p)
             next_token_id = next_ids.item()
             if (str(next_token_id) == str(self.model.eos_token)) or ((len(request.tokens) - request.prompt_len) >= request.max_tokens):
-                logger.info(f"Request {request.request_id} finished. Marking as finished and removing from active requests.")
+                # logger.info(f"Request {request.request_id} finished. Marking as finished and removing from active requests.")
                 request.mark_finished()
                 request.add_token(None)
                 request.queue.put_nowait(None)
                 self.dirty = True
             else:
-                logger.info(f"Request {request.request_id} generated token id {next_token_id}. Adding to tokens.")
+                # logger.info(f"Request {request.request_id} generated token id {next_token_id}. Adding to tokens.")
                 request.add_token(next_token_id)
                 request.queue.put_nowait(next_token_id)
 

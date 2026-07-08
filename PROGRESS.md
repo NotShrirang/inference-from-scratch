@@ -12,11 +12,11 @@ limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks
 | 2 | KV cache + real streaming — `/generate-stream` | ✅ done | `benchmarks/step2_kv_cache.{json,png}` |
 | 3 | Static batching — `/generate-batch` | ✅ done | `benchmarks/step3_batching.{json,png}` |
 | 4 | Continuous / in-flight batching (scheduler + queue) | ✅ done | `app/batching/engine.py`, `benchmarks/step4_continuous_batching.{json,png}` |
-| 5 | Paged / block KV cache (block allocator) | ⬜ **next** | — |
-| 6 | Prefix caching (shared-prefix KV reuse) | ⬜ todo | — |
-| 7 | Speculative decoding (draft + verify) | ⬜ todo | — |
-| 8 | Scheduling & admission control (priorities, chunked prefill) | ⬜ todo | — |
-| 9 | Serve a quantized model (library quant + KV quant via `/load`) | ⬜ todo | — |
+| 5 | Paged / block KV cache (block allocator) | 🔎 explored → read track | see note |
+| 6 | Prefix caching (shared-prefix KV reuse) | ⏸ deferred (needs cache surgery) | — |
+| 7 | Speculative decoding (draft + verify) | ⏸ deferred (needs cache surgery) | — |
+| 8 | Admission control (batch cap + bounded queue → 429) | ✅ done | `benchmarks/step8_admission_control.{json,png}` |
+| 9 | Serve a quantized model (library quant + KV quant via `/load`) | ⬜ **next** | — |
 | 10 | Attention-variant model swap (GQA/MQA, sliding window) | ⬜ todo | — |
 | 11 | Compilation (`torch.compile` + CUDA graphs) | ⬜ todo | — |
 | 12 | Observability & SLO tuning (prometheus + Pareto/goodput) | ⬜ todo | — |
@@ -81,6 +81,33 @@ limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks
     (guarded, skip after eviction); set `padding_side` on the tokenizer; finish on *generated* count;
     re-prefill from full `req.tokens` (not the prompt) so rebatch keeps context; sampling (not argmax)
     to avoid the base model's greedy echo.
+
+### Step 5 — paged / block KV cache 🔎 explored, not shipped (→ read track)
+- Attempted the two pieces on HF's `DynamicCache`: **evict** = slice finished rows out; **admit** =
+  prefill only the new request and **splice** its KV in (left-pad seq dim, cat on batch dim). Both are
+  doable but require reaching into `DynamicCache.key_cache`/`.value_cache` internals — fragile.
+- Also tried **auto-sizing `batch_size`** from VRAM: analytical (weights + KV + activation) over-predicted
+  wildly (8192!), a profiling probe of one prefill still over-predicted (230 vs real OOM at ~32).
+- **Why it's parked:** the pure-Python-on-HF version can't win. True paging needs a scatter-read
+  attention **kernel** (read track) so KV lives in fixed non-contiguous blocks. The payoff of paging is
+  **memory determinism**, not speed: fixed blocks kill fragmentation → peak memory becomes exactly
+  `num_blocks × block_bytes`; and no recompute-on-rebatch means the only transient is one decode step.
+  On a fragmenting allocator with variable-length KV + recompute transients, peak memory is *not*
+  perfectly calculable — which is the whole reason PagedAttention exists. Lesson learned; build deferred
+  to the kernel/interview track.
+
+### Step 8 — admission control ✅
+- `batch_size` cap on the active batch + bounded `waiting_requests` (`max_waiting = 4 × batch_size`);
+  `submit` raises when the queue is full → endpoint returns **HTTP 429** (fixed the swallowed-into-500
+  bug: `HTTPException` is an `Exception`, so the generic handler must re-raise it, not wrap it).
+- Result vs step 4 (both batch_size=16, sweep to conc 256): where the earlier auto-sized run OOM'd at 32,
+  admission control **degrades gracefully to 256** — throughput holds ~450–570 tok/s, TPOT flat ~0.03s,
+  and overflow is shed as clean 429s (2430 @ 128, 1367 @ 256). The win isn't higher throughput; it's a
+  **bounded queue + explicit load-shedding** instead of an unbounded queue / OOM.
+- Steps 6 (prefix caching) & 7 (speculative decoding) deferred — both need the same HF `DynamicCache`
+  surgery parked in step 5 (splice a shared prefix / roll back rejected draft tokens).
+- Optional hardening not done: `Retry-After` on the 429, `uvicorn --limit-concurrency` front door,
+  `try/except` around `_step` so one bad step can't kill the engine loop.
 
 ## Standalone experiments (done, off the build path)
 

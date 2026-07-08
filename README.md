@@ -141,30 +141,3 @@ request is batched, vs step 2's 14× blow-up. TTFT is ~0.08s until the knee, the
 (→25s at conc 256) as requests queue for a slot. So past the knee you buy only latency, not
 throughput — the SLO operating point is ≈ the knee. (At concurrency 1, CB is slightly slower
 than step 2: engine overhead with no batch to amortize.)
-
-### Quantization (standalone experiment — memory vs speed)
-
-By-hand symmetric per-channel weight-only quantization of every `nn.Linear`
-(`quntization_script.py`); int8 stored directly, int4 packed two-per-byte.
-Measured on DeepSeek-R1-Distill-Qwen-1.5B, 128 tokens (`benchmark_quantized.py`):
-
-```bash
-python benchmark_quantized.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B --variants fp16,int8,int4
-python scripts/plot_quantized.py --results benchmarks/step4_quantization.json
-```
-
-![Quantization — memory vs speed](benchmarks/step4_quantization.png)
-
-| variant | stored weights | peak VRAM | tok/s |
-|--------:|------:|------:|------:|
-| fp16 | 3554 MB | 3570 MB | 82.3 |
-| int8 | 2247 MB | 2436 MB | 12.8 |
-| int4 | 1591 MB | 1740 MB | 7.4 |
-
-**Takeaways:** a deliberate *negative* result. Memory falls (~2.2× at int4 — capped
-because the bf16 embeddings/lm_head are a large floor for a 150k-vocab model), but
-**decode gets dramatically slower** (int8 6.4×, int4 11×): naive dequant rebuilds the
-full fp weight (and unpacks int4) every forward in eager PyTorch, dwarfing the matmul.
-Quantization is a *memory* win, not a speed win — until the dequant is fused into the
-matmul kernel. Serving a quantized model is build **step 9**; the fusion/kernel side
-lives in the read & interview track.

@@ -15,7 +15,7 @@ from app.batching.engine import ContinuousBatchingEngine
 router = APIRouter()
 
 @router.post("/load")
-async def load_model(request: Request, model_name: str = "Qwen/Qwen2.5-0.5B"):
+async def load_model(request: Request, batch_size: int = 16, model_name: str = "Qwen/Qwen2.5-0.5B", max_length: int = 50):
     try:
         model = ChatModel(model_name, device=get_device())
         if request.app.state.model is None:
@@ -24,11 +24,19 @@ async def load_model(request: Request, model_name: str = "Qwen/Qwen2.5-0.5B"):
         request.app.state.model[model_name] = model
         logger.info(f"Model '{model_name}' loaded successfully.")
         logger.info(f"Initializing ContinuousBatchingEngine for model '{model_name}'.")
-        engine = ContinuousBatchingEngine(model=model, batch_size=8, max_length=50)
+        engine = ContinuousBatchingEngine(model=model, batch_size=batch_size, max_length=max_length)
         logger.info(f"Starting continuous batching engine for model '{model_name}'.")
         engine.start()
         request.app.state.engine[model_name] = engine
-        return JSONResponse(content={"message": f"Model '{model_name}' loaded successfully. Continuous batching engine started.", "engine_id": engine.id, "model_eos_token": model.eos_token})
+        return JSONResponse(content={
+            "message": f"Model '{model_name}' loaded successfully. Continuous batching engine started.",
+            "engine_id": engine.id,
+            "model_eos_token": model.eos_token,
+            "model_pad_token": model.pad_token,
+            "model_device": str(model.device),
+            "batch_size": engine.batch_size,
+            "max_length": engine.max_length
+        })
     except Exception as e:
         trace = traceback.format_exc()
         logger.error(f"Error loading model '{model_name}': {trace}")
@@ -117,7 +125,7 @@ async def generate_text_continuous_batch(request: Request, model_name: str = "Qw
         logger.info(f"Continuous batch text generation with model '{model_name}' for input: {input_text}")
         if not engine:
             raise HTTPException(status_code=400, detail="Continuous batching engine not found for the specified model.")
-        
+
         req = await engine.submit(prompt=input_text, max_new_tokens=max_length, temperature=temperature, top_p=top_p)
 
         async def stream_generator():
@@ -131,6 +139,10 @@ async def generate_text_continuous_batch(request: Request, model_name: str = "Qw
                     await asyncio.sleep(0.1)
         
         return StreamingResponse(stream_generator(), media_type="text/plain")
+    except RuntimeError as e:
+        logger.error(f"Error submitting request to continuous batching engine for model '{model_name}': {str(e)}")
+        raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         trace = traceback.format_exc()
         logger.error(f"Error in continuous batch text generation with model '{model_name}': {trace}")
+        return JSONResponse(status_code=500, content={"detail": str(e), "trace": trace})

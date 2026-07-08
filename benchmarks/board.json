@@ -17,6 +17,12 @@
       "label": "Step 4 \u2014 continuous batching",
       "results": "benchmarks/step4_continuous_batching.json",
       "x_key": "concurrency"
+    },
+    {
+      "step": 8,
+      "label": "Step 8 \u2014 admission control",
+      "results": "benchmarks/step8_admission_control.json",
+      "x_key": "concurrency"
     }
   ]
 }
