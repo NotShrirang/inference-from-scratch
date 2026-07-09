@@ -48,3 +48,19 @@ def sample_next_token(logits: torch.Tensor, temperature: float = 1.0, top_p: flo
     sampled = torch.multinomial(filtered_probs, num_samples=1)
 
     return sorted_indices.gather(-1, sampled).squeeze(-1)
+
+
+def sample_next_token_batched(logits, temperature, top_p):
+      logits = logits / temperature
+      probs = torch.softmax(logits, dim=-1)
+
+      sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
+      cumsum = sorted_probs.cumsum(dim=-1)
+      remove = cumsum > top_p
+      remove[..., 1:] = remove[..., :-1].clone()
+      remove[..., 0] = False
+      sorted_probs[remove] = 0.0
+      sorted_probs /= sorted_probs.sum(dim=-1, keepdim=True)
+
+      choice = torch.multinomial(sorted_probs, 1)
+      return sorted_idx.gather(-1, choice).squeeze(-1)

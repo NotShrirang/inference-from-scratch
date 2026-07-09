@@ -1,11 +1,15 @@
 import asyncio
-from datetime import datetime
-import torch
+import time
 import typing
 import uuid
+from collections import defaultdict
+from contextlib import contextmanager
+from datetime import datetime
+
+import torch
 
 from app import logger
-from app.api.utils import sample_next_token
+from app.api.utils import sample_next_token, sample_next_token_batched
 from app.model import ChatModel
 from app.request import InferenceRequest
 
@@ -23,12 +27,41 @@ class ContinuousBatchingEngine:
         self.dirty = False
         self.running = False
 
+        # profiling: name -> [total_seconds, count]
+        self.timings = defaultdict(lambda: [0.0, 0])
+
         self.model.tokenizer.padding_side = "left"
         if self.model.pad_token is None:
             self.model.pad_token = self.model.eos_token
 
         logger.info(f"ContinuousBatchingEngine for {self.model.model_name} initialized with batch size {batch_size} and max length {max_length}")
     
+    @contextmanager
+    def _timeit(self, name: str):
+        """Time a block, syncing CUDA so async kernels are attributed correctly."""
+        cuda = str(self.model.device).startswith("cuda")
+        if cuda:
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        try:
+            yield
+        finally:
+            if cuda:
+                torch.cuda.synchronize()
+            rec = self.timings[name]
+            rec[0] += time.perf_counter() - t0
+            rec[1] += 1
+
+    def profile_report(self) -> dict:
+        return {
+            name: {"avg_ms": round(total / count * 1000, 4), "count": count,
+                   "total_ms": round(total * 1000, 2)}
+            for name, (total, count) in self.timings.items() if count
+        }
+
+    def reset_timings(self):
+        self.timings.clear()
+
     def _active_empty(self) -> bool:
         return self.active_requests_count == 0
     
@@ -62,7 +95,8 @@ class ContinuousBatchingEngine:
         self.attn_mask = inputs["attention_mask"]
 
         # logger.info(f"Forward pass for {self.active_requests_count} active requests.")
-        logits, past_key_values = self.model.forward(inputs)
+        with self._timeit("prefill_fwd"):
+            logits, past_key_values = self.model.forward(inputs)
         return logits, past_key_values
     
     def _decode(self, past_key_values) -> typing.Tuple[torch.Tensor, typing.Any]:
@@ -73,14 +107,16 @@ class ContinuousBatchingEngine:
             device=self.model.device,
         )
         inputs = {"input_ids": last_tokens, "attention_mask": self.attn_mask}
-        logits, past_key_values = self.model.forward(inputs, past_key_values=past_key_values)
+        with self._timeit("decode_fwd"):
+            logits, past_key_values = self.model.forward(inputs, past_key_values=past_key_values)
         return logits, past_key_values
 
     async def submit(self, prompt: str, max_new_tokens: int, temperature: float = 0.6, top_p: float = 0.9) -> InferenceRequest:
         if self.waiting_requests_count >= self.max_waiting_requests:
             raise RuntimeError(f"Too many waiting requests ({self.waiting_requests_count}). Please try again later.")
         logger.info(f"Submitting new request with prompt: {prompt[:10]} and max_new_tokens: {max_new_tokens}")
-        inputs = self._tokenize_prompts(prompt)
+        with self._timeit("tokenize"):
+            inputs = self._tokenize_prompts(prompt)
         request = InferenceRequest(
             request_id=str(uuid.uuid4()),
             model_name=self.model.model_name,
@@ -124,8 +160,12 @@ class ContinuousBatchingEngine:
                 await asyncio.sleep(0.005)
                 continue
                 
-            # step
-            self._step()
+            # step (guarded: one bad step must not silently kill the engine loop)
+            try:
+                self._step()
+            except Exception:
+                logger.error("engine _step failed; resetting active batch and continuing", exc_info=True)
+                self._reset_batch()
 
             # SSE responses flush
             await asyncio.sleep(0)
@@ -145,9 +185,14 @@ class ContinuousBatchingEngine:
             logits, past_key_values = self._decode(self.past_key_values)
             self.past_key_values = past_key_values
 
+        temps = torch.tensor([r.temperature for r in self.active_requests], device=self.model.device).unsqueeze(1)
+        tops  = torch.tensor([r.top_p for r in self.active_requests], device=self.model.device).unsqueeze(1)
+
+        with self._timeit("sample"):
+            next_ids = sample_next_token_batched(logits[:, -1, :], temperature=temps, top_p=tops).tolist()
+
         for i, request in enumerate(self.active_requests):
-            next_ids = sample_next_token(logits[i, -1, :], temperature=request.temperature, top_p=request.top_p)
-            next_token_id = next_ids.item()
+            next_token_id = next_ids[i]
             if (str(next_token_id) == str(self.model.eos_token)) or ((len(request.tokens) - request.prompt_len) >= request.max_tokens):
                 # logger.info(f"Request {request.request_id} finished. Marking as finished and removing from active requests.")
                 request.mark_finished()
@@ -163,6 +208,20 @@ class ContinuousBatchingEngine:
 
         if not self.dirty and self.attn_mask is not None and self.active_requests_count > 0:
             self.attn_mask = torch.cat([self.attn_mask, torch.ones((self.active_requests_count, 1), dtype=self.attn_mask.dtype, device=self.model.device)], dim=-1)
+
+    def _reset_batch(self):
+        """Recover from a failed step: fail the in-flight batch (so clients unblock),
+        drop the cache, and free CUDA memory — the engine keeps serving instead of dying."""
+        for req in self.active_requests:
+            if not req.finished:
+                req.mark_finished()
+                req.queue.put_nowait(None)   # sentinel so the client's stream ends
+        self.active_requests = []
+        self.past_key_values = None
+        self.attn_mask = None
+        self.dirty = False
+        if str(self.model.device).startswith("cuda"):
+            torch.cuda.empty_cache()
 
     async def stop(self):
         logger.info(f"Stopping ContinuousBatchingEngine with id {self.id}")

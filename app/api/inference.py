@@ -21,6 +21,18 @@ async def load_model(request: Request, batch_size: int = 16, model_name: str = "
         if request.app.state.model is None:
             request.app.state.model = {}
             logger.info(f"Initialized model storage for the first time.")
+
+        if model_name in request.app.state.model.keys():
+            logger.info(f"Model '{model_name}' is already loaded. Returning existing model.")
+            return JSONResponse(content={
+                "message": f"Model '{model_name}' is already loaded.",
+                "model_eos_token": model.eos_token,
+                "model_pad_token": model.pad_token,
+                "model_device": str(model.device),
+                "batch_size": batch_size,
+                "max_length": max_length
+            })
+
         request.app.state.model[model_name] = model
         logger.info(f"Model '{model_name}' loaded successfully.")
         logger.info(f"Initializing ContinuousBatchingEngine for model '{model_name}'.")
@@ -45,7 +57,7 @@ async def load_model(request: Request, batch_size: int = 16, model_name: str = "
 @router.post("/unload")
 async def unload_model(request: Request, model_name: str):
     clear_cuda_cache()
-    if request.app.state.model is None or model_name not in request.app.state.model:
+    if request.app.state.model is None or model_name not in request.app.state.model.keys():
         raise HTTPException(status_code=400, detail="Model not found.")
     if request.app.state.model is not None:
         logger.info(f"Unloading model '{model_name}'.")
@@ -146,3 +158,14 @@ async def generate_text_continuous_batch(request: Request, model_name: str = "Qw
         trace = traceback.format_exc()
         logger.error(f"Error in continuous batch text generation with model '{model_name}': {trace}")
         return JSONResponse(status_code=500, content={"detail": str(e), "trace": trace})
+
+
+@router.get("/engine-profile")
+async def engine_profile(request: Request, model_name: str = "Qwen/Qwen2.5-0.5B", reset: bool = False):
+    engine: ContinuousBatchingEngine = request.app.state.engine.get(model_name)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Continuous batching engine not found for the specified model.")
+    report = engine.profile_report()
+    if reset:
+        engine.reset_timings()
+    return JSONResponse(content={"engine_id": engine.id, "profile": report})

@@ -18,7 +18,7 @@ limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks
 | 8 | Admission control (batch cap + bounded queue → 429) | ✅ done | `benchmarks/step8_admission_control.{json,png}` |
 | 9 | Serve a quantized model (library quant + KV quant via `/load`) | ⬜ **next** | — |
 | 10 | Attention-variant model swap (GQA/MQA, sliding window) | ⬜ todo | — |
-| 11 | Compilation (`torch.compile` + CUDA graphs) | ⬜ todo | — |
+| 11 | Compilation (`torch.compile` + CUDA graphs) | ⏸ deferred (needs static-shape bucketing) | — |
 | 12 | Observability & SLO tuning (prometheus + Pareto/goodput) | ⬜ todo | — |
 | 13 | Structured / guided decoding (JSON/grammar) | ⬜ todo | — |
 | 14 | OpenAI-compatible API | ⬜ todo | — |
@@ -106,8 +106,36 @@ limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks
   **bounded queue + explicit load-shedding** instead of an unbounded queue / OOM.
 - Steps 6 (prefix caching) & 7 (speculative decoding) deferred — both need the same HF `DynamicCache`
   surgery parked in step 5 (splice a shared prefix / roll back rejected draft tokens).
-- Optional hardening not done: `Retry-After` on the 429, `uvicorn --limit-concurrency` front door,
-  `try/except` around `_step` so one bad step can't kill the engine loop.
+- Hardened `_run`: `_step` is wrapped in `try/except` → on failure it logs, `_reset_batch()` (fails the
+  in-flight requests with a sentinel, drops the cache, `empty_cache()`), and continues — one bad step no
+  longer silently bricks the engine loop. (Still optional: `Retry-After` on the 429, `uvicorn
+  --limit-concurrency` front door.)
+- Debugging-tail lessons (all env/tooling, not the engine): (1) `/load` reloaded weights to VRAM every
+  call → session VRAM creep → OOM; fixed by checking already-loaded before constructing. (2) The benchmark
+  used `timeout=None`, so a starved stream hung the whole level; fixed with a per-request timeout + a hard
+  level deadline that cancels stragglers. (3) A long-lived server fragments VRAM across back-to-back heavy
+  sweeps → 30× slowdown until restart — restart between stress runs (or `PYTORCH_CUDA_ALLOC_CONF=
+  expandable_segments:True`). This fragility is exactly what fixed-size paged pools avoid — memory
+  determinism, again.
+
+## Profiling & micro-optimizations
+
+Tooling: `scripts/profile_request.py` (standalone) + `scripts/profile_service.py` (drives the live
+engine) + `/engine-profile` endpoint. Per-op timing with `torch.cuda.synchronize()` (so async kernels
+attribute correctly), averaged over N requests.
+
+- **Where the time goes** (Qwen2.5-0.5B, 100 req, conc 8): **decode_fwd ~69%** (runs ~64× per request),
+  prefill ~17–23% (once per request + recompute-on-rebatch churn), sample ~8%, tokenize ~0%. Decode is
+  the irreducible cost — concrete proof that TPOT is *the* metric.
+- **Batched sampling (kept):** vectorized top-p over `[batch, vocab]` instead of a per-request Python
+  loop. Clean same-GPU A/B: **~1.9× faster** sampling (2100 → 1124 ms over 100 req), 14% → 8% of the
+  pipeline, ~7% off whole-run. Win = one batched sort + one `.tolist()` instead of B sorts + B `.item()`
+  syncs per step. Residual cost is the full-152k-vocab sort (top-k pre-filter would shrink it further).
+- **torch.compile explored → deferred (step 11):** `mode="reduce-overhead"` (CUDA graphs) on the
+  dynamic-shape decode loop recompiled ~every step → **15× slower** (decode 12 → 178 ms, run 13 s → 6 min).
+  Compile needs static-shape bucketing (fixed batch + seq buckets) to pay off; deferred to the read track
+  with paging. Note: a `/load` bug reloads weights to VRAM on every call (constructs `ChatModel` before
+  the already-loaded check) — leaks VRAM across a session; suspect for the conc-64 OOM below.
 
 ## Standalone experiments (done, off the build path)
 

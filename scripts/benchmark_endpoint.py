@@ -114,17 +114,24 @@ async def worker(client, base, endpoint, model, max_length, stop, res):
         res.append(await one_request(client, base, endpoint, model, max_length))
 
 
-async def run_level(base, endpoint, model, concurrency, duration, max_length):
+async def run_level(base, endpoint, model, concurrency, duration, max_length, timeout):
     res = []
     limits = httpx.Limits(
         max_connections=concurrency * 2, max_keepalive_connections=concurrency * 2
     )
-    async with httpx.AsyncClient(timeout=None, limits=limits) as client:
+    # per-request timeout: a stalled stream raises ReadTimeout (caught -> recorded as err)
+    # instead of hanging the level forever.
+    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         t = time.perf_counter()
         stop = t + duration
-        await asyncio.gather(
-            *[worker(client, base, endpoint, model, max_length, stop, res) for _ in range(concurrency)]
-        )
+        tasks = [asyncio.create_task(worker(client, base, endpoint, model, max_length, stop, res))
+                 for _ in range(concurrency)]
+        # workers stop firing at `stop`; give one request-timeout of grace for in-flight
+        # requests to finish/time out, then cancel any stragglers so the level always advances.
+        _, pending = await asyncio.wait(tasks, timeout=duration + timeout)
+        for tk in pending:
+            tk.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         wall = time.perf_counter() - t
 
     ok = [r for r in res if r["ok"]]
@@ -157,6 +164,8 @@ async def main():
     ap.add_argument("--load", action="store_true", help="call /load before sweeping")
     ap.add_argument("--max-length", type=int, default=64)
     ap.add_argument("--duration", type=float, default=20, help="seconds per concurrency level")
+    ap.add_argument("--timeout", type=float, default=60,
+                    help="per-request timeout (s); a stalled request is marked err, not hung")
     ap.add_argument("--levels", default="1,2,4,8,16,32,64,128,256", help="comma-separated concurrency levels")
     ap.add_argument("--out", default="bench_endpoint_results.json")
     a = ap.parse_args()
@@ -176,7 +185,7 @@ async def main():
     print(hdr)
     print("-" * len(hdr))
     for c in (int(x) for x in a.levels.split(",")):
-        row = await run_level(a.base, a.endpoint, a.model, c, a.duration, a.max_length)
+        row = await run_level(a.base, a.endpoint, a.model, c, a.duration, a.max_length, a.timeout)
         rows.append(row)
         print(
             f"{row['concurrency']:>5} {row['req_per_s']:>7.2f} {row['throughput_tok_s']:>9.1f} "
