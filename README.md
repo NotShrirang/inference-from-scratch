@@ -141,3 +141,35 @@ request is batched, vs step 2's 14× blow-up. TTFT is ~0.08s until the knee, the
 (→25s at conc 256) as requests queue for a slot. So past the knee you buy only latency, not
 throughput — the SLO operating point is ≈ the knee. (At concurrency 1, CB is slightly slower
 than step 2: engine overhead with no batch to amortize.)
+
+### Capstone — custom engine vs vLLM
+
+The from-scratch engine benchmarked against a production one. Same model (Qwen2.5-0.5B), same
+prompts, same metrics; each server run *alone* on the 8 GB GPU (they can't co-reside — vLLM reserves
+~90% of VRAM). Client: `scripts/benchmark_vllm.py` (OpenAI-compatible), plotted with `scripts/board.py`.
+
+![Capstone — custom engine vs vLLM](benchmarks/capstone_vllm_vs_custom.png)
+
+| metric | Custom (this repo) | vLLM | gap |
+|--------|------:|------:|----:|
+| tok/s @ concurrency 1 | 73 | 270 | 3.7× |
+| tok/s peak | 593 (@16) | 9370 (@256) | ~16× |
+| TTFT p50 @ concurrency 1 | 119 ms | 9 ms | 13× |
+| TPOT p95 @ concurrency 1 | 11 ms | 3.7 ms | 3× |
+| errors @ concurrency 256 | sheds (429) | 0 | — |
+
+**The point of the comparison isn't the gap — it's that every piece of the gap maps onto a specific
+technique this project deliberately deferred:**
+
+- **~17× throughput + never shedding to 256 → PagedAttention.** vLLM stores each sequence's KV in
+  fixed non-contiguous blocks, so it fits *hundreds* of concurrent sequences in the same 8 GB (no
+  padding waste, no fragmentation) and its batch grows to 256+. This engine's contiguous, padded KV
+  cache caps out at `batch_size=16` and sheds beyond — the exact wall that motivates paging.
+- **~3× lower TPOT → fused kernels + CUDA graphs + FlashAttention.** vLLM's decode is one
+  graph-captured fused kernel; this engine runs eager per-op PyTorch.
+- **~13× lower TTFT → a faster prefill kernel + a leaner (C++) serving path.**
+
+Paging owns the throughput/capacity axis; fused kernels own the per-token-latency axis. You reach
+this engine's ceiling with pure-Python/PyTorch serving logic — the rest is the kernel-level work that
+[plan.md](plan.md)'s read/interview track covers. Building the primitives first is what makes the
+production system's design decisions legible instead of magic.

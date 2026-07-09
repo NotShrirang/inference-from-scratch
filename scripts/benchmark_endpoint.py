@@ -99,6 +99,11 @@ async def one_request(client, base, endpoint, model, max_length):
         # record it so the sweep keeps going and the failure shows up in the report.
         ok = False
         err = f"{type(e).__name__}: {e}"
+    if ok and out == 0:
+        # a 200 with zero tokens is not a success — the stream was empty (e.g. the engine
+        # aborted the batch on OOM). Count it as a failure so it can't inflate throughput.
+        ok = False
+        err = "empty response (0 tokens)"
     return {
         "ttft": ttft,
         "tpot": statistics.mean(itls) if itls else 0.0,

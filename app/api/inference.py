@@ -15,7 +15,7 @@ from app.batching.engine import ContinuousBatchingEngine
 router = APIRouter()
 
 @router.post("/load")
-async def load_model(request: Request, batch_size: int = 16, model_name: str = "Qwen/Qwen2.5-0.5B", max_length: int = 50):
+async def load_model(request: Request, batch_size: int = 16, model_name: str = "Qwen/Qwen2.5-0.5B", max_length: int = 50, profiling: bool = False):
     try:
         model = ChatModel(model_name, device=get_device())
         if request.app.state.model is None:
@@ -36,7 +36,7 @@ async def load_model(request: Request, batch_size: int = 16, model_name: str = "
         request.app.state.model[model_name] = model
         logger.info(f"Model '{model_name}' loaded successfully.")
         logger.info(f"Initializing ContinuousBatchingEngine for model '{model_name}'.")
-        engine = ContinuousBatchingEngine(model=model, batch_size=batch_size, max_length=max_length)
+        engine = ContinuousBatchingEngine(model=model, batch_size=batch_size, max_length=max_length, profiling=profiling)
         logger.info(f"Starting continuous batching engine for model '{model_name}'.")
         engine.start()
         request.app.state.engine[model_name] = engine
@@ -149,6 +149,8 @@ async def generate_text_continuous_batch(request: Request, model_name: str = "Qw
                     yield f"data: {engine.model.tokenizer.decode(token, skip_special_tokens=True)}\n\n"
                 else:
                     await asyncio.sleep(0.1)
+            if req.status == "error":
+                raise RuntimeError(getattr(req, "error", "generation failed"))
         
         return StreamingResponse(stream_generator(), media_type="text/plain")
     except RuntimeError as e:

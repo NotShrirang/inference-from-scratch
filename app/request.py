@@ -46,6 +46,12 @@ class InferenceRequest:
         self.status = "finished"
         self.updated_at = datetime.utcnow().isoformat()
 
+    def mark_error(self, message: str = "generation failed") -> None:
+        self.finished = True
+        self.status = "error"
+        self.error = message
+        self.updated_at = datetime.utcnow().isoformat()
+
     def add_token(self, token: str) -> None:
         self.tokens.append(token)
         self.updated_at = datetime.utcnow().isoformat()

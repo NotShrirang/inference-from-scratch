@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "step": 1,
+      "label": "Custom (yours)",
+      "results": "benchmarks/capstone_custom.json",
+      "x_key": "concurrency"
+    },
+    {
+      "step": 2,
+      "label": "vLLM",
+      "results": "benchmarks/capstone_vllm.json",
+      "x_key": "concurrency"
+    }
+  ]
+}

@@ -22,7 +22,7 @@ limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks
 | 12 | Observability & SLO tuning (prometheus + Pareto/goodput) | ⬜ todo | — |
 | 13 | Structured / guided decoding (JSON/grammar) | ⬜ todo | — |
 | 14 | OpenAI-compatible API | ⬜ todo | — |
-| 15 | Capstone — benchmark vs vLLM on the board | ⬜ todo | — |
+| 15 | Capstone — benchmark vs vLLM on the board | ✅ done | `benchmarks/capstone_*.{json,png}` |
 
 ## Read & interview track (Claude quizzes me — no code)
 
@@ -136,6 +136,32 @@ attribute correctly), averaged over N requests.
   Compile needs static-shape bucketing (fixed batch + seq buckets) to pay off; deferred to the read track
   with paging. Note: a `/load` bug reloads weights to VRAM on every call (constructs `ChatModel` before
   the already-loaded check) — leaks VRAM across a session; suspect for the conc-64 OOM below.
+
+## Step 15 — capstone: custom engine vs vLLM ✅
+
+Same model (Qwen2.5-0.5B), same prompts, same metrics; each server benchmarked **alone** on the 8 GB
+GPU (they can't co-reside — vLLM grabs ~90% VRAM). `benchmarks/capstone_{custom,vllm}.json`,
+`capstone_vllm_vs_custom.png` (dedicated board `benchmarks/capstone.json`).
+
+| metric | Custom | vLLM | gap |
+|--------|------:|------:|----:|
+| tok/s @ conc 1 | 73 | 270 | 3.7× |
+| tok/s peak | 593 (@16) | 9370 (@256) | ~16× |
+| TTFT p50 @ conc 1 | 119 ms | 9 ms | 13× |
+| TPOT p95 @ conc 1 | 11 ms | 3.7 ms | 3× |
+| errors @ conc 256 | ~1300 (sheds) | 0 | — |
+
+Gap attribution (the payoff — every piece maps to a deferred technique):
+- **17× throughput + never shedding → PagedAttention** (step 5): vLLM packs hundreds of sequences into
+  8 GB (fixed blocks, no padding/fragmentation), batch grows to 256+; ours caps at 16 and sheds.
+- **TPOT ~3× → fused kernels + CUDA graphs + FlashAttention** (step 11 / kernel track): vLLM's decode is
+  one graph-captured fused kernel; ours is eager per-op PyTorch.
+- **TTFT 13× → partly fast prefill, but mostly a fixable bug**: our `stream_generator` polls the queue
+  with `await asyncio.sleep(0.1)` instead of `await queue.get()` → up to 100 ms before the first token
+  flushes. Fix = block on the queue; should drop TTFT ~119 ms → ~20 ms without paging.
+
+Verdict: paging owns the capacity/throughput axis; fused kernels own the per-token-latency axis — both
+are the read/interview-track items, now understood from having built a server without them.
 
 ## Standalone experiments (done, off the build path)
 

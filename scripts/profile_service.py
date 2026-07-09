@@ -47,7 +47,8 @@ async def main():
 
     async with httpx.AsyncClient(timeout=None) as client:
         if a.load:
-            r = await client.post(f"{a.base}/load", params={"model_name": a.model})
+            # enable profiling so the engine records per-op timings (syncs are off otherwise)
+            r = await client.post(f"{a.base}/load", params={"model_name": a.model, "profiling": "true"})
             r.raise_for_status()
             print(f"[load] {r.json().get('message')}")
 

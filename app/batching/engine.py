@@ -14,7 +14,7 @@ from app.model import ChatModel
 from app.request import InferenceRequest
 
 class ContinuousBatchingEngine:
-    def __init__(self, model: ChatModel, batch_size: int = 4, max_length: int = 50):
+    def __init__(self, model: ChatModel, batch_size: int = 4, max_length: int = 50, profiling: bool = False):
         self.id = f"cbe-{uuid.uuid4()}"
         self.model = model
         self.batch_size = batch_size
@@ -27,8 +27,10 @@ class ContinuousBatchingEngine:
         self.dirty = False
         self.running = False
 
-        # profiling: name -> [total_seconds, count]
-        self.timings = defaultdict(lambda: [0.0, 0])
+        # profiling: when on, _timeit syncs CUDA + records per-op timings. OFF by default so the
+        # serving hot path doesn't pay a torch.cuda.synchronize() on every forward.
+        self.profiling = profiling
+        self.timings = defaultdict(lambda: [0.0, 0])  # name -> [total_seconds, count]
 
         self.model.tokenizer.padding_side = "left"
         if self.model.pad_token is None:
@@ -38,7 +40,11 @@ class ContinuousBatchingEngine:
     
     @contextmanager
     def _timeit(self, name: str):
-        """Time a block, syncing CUDA so async kernels are attributed correctly."""
+        """Time a block, syncing CUDA so async kernels are attributed correctly.
+        No-op unless self.profiling — the syncs serialize the GPU and must not tax serving."""
+        if not self.profiling:
+            yield
+            return
         cuda = str(self.model.device).startswith("cuda")
         if cuda:
             torch.cuda.synchronize()
@@ -214,8 +220,8 @@ class ContinuousBatchingEngine:
         drop the cache, and free CUDA memory — the engine keeps serving instead of dying."""
         for req in self.active_requests:
             if not req.finished:
-                req.mark_finished()
-                req.queue.put_nowait(None)   # sentinel so the client's stream ends
+                req.mark_error("engine step failed (likely CUDA OOM)")
+                req.queue.put_nowait(None)   # sentinel so the client's stream unblocks
         self.active_requests = []
         self.past_key_values = None
         self.attn_mask = None
