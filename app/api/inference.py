@@ -17,12 +17,12 @@ router = APIRouter()
 @router.post("/load")
 async def load_model(request: Request, batch_size: int = 16, model_name: str = "Qwen/Qwen2.5-0.5B", max_length: int = 50, profiling: bool = False):
     try:
-        model = ChatModel(model_name, device=get_device())
         if request.app.state.model is None:
             request.app.state.model = {}
             logger.info(f"Initialized model storage for the first time.")
 
         if model_name in request.app.state.model.keys():
+            model = request.app.state.model[model_name]
             logger.info(f"Model '{model_name}' is already loaded. Returning existing model.")
             return JSONResponse(content={
                 "message": f"Model '{model_name}' is already loaded.",
@@ -33,6 +33,7 @@ async def load_model(request: Request, batch_size: int = 16, model_name: str = "
                 "max_length": max_length
             })
 
+        model = ChatModel(model_name, device=get_device())
         request.app.state.model[model_name] = model
         logger.info(f"Model '{model_name}' loaded successfully.")
         logger.info(f"Initializing ContinuousBatchingEngine for model '{model_name}'.")

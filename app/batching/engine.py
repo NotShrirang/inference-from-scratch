@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime
 
 import torch
+import torch.nn.functional as F
 
 from app import logger
 from app.api.utils import sample_next_token, sample_next_token_batched
@@ -22,13 +23,12 @@ class ContinuousBatchingEngine:
         self.max_waiting_requests = 4 * self.batch_size
         self.waiting_requests: typing.List[InferenceRequest] = []
         self.active_requests: typing.List[InferenceRequest] = []
-        self.attn_mask = None
+        self.attn_mask = None          # invariant: shape[1] == current cache seq length
         self.past_key_values = None
+        self.new_requests: typing.List[InferenceRequest] = []   # admitted, not yet prefilled/spliced
         self.dirty = False
         self.running = False
 
-        # profiling: when on, _timeit syncs CUDA + records per-op timings. OFF by default so the
-        # serving hot path doesn't pay a torch.cuda.synchronize() on every forward.
         self.profiling = profiling
         self.timings = defaultdict(lambda: [0.0, 0])  # name -> [total_seconds, count]
 
@@ -40,8 +40,6 @@ class ContinuousBatchingEngine:
     
     @contextmanager
     def _timeit(self, name: str):
-        """Time a block, syncing CUDA so async kernels are attributed correctly.
-        No-op unless self.profiling — the syncs serialize the GPU and must not tax serving."""
         if not self.profiling:
             yield
             return
@@ -86,36 +84,80 @@ class ContinuousBatchingEngine:
             padding=True
         ).to(self.model.device)
 
+    @staticmethod
+    def _position_ids(mask: torch.Tensor) -> torch.Tensor:
+        return (mask.long().cumsum(-1) - 1).clamp_min_(0)
+
     def _prefill(self) -> torch.Tensor:
-        # logger.info(f"Prefilling for {self.active_requests_count} active requests.")
-        # left pad every active reqs full tokens to max length; req.tokens is a list of token ids
-        maxlen = max(len(req.tokens) for req in self.active_requests)
-        padded_tokens = [
-            [self.model.pad_token] * (maxlen - len(req.tokens)) + req.tokens for req in self.active_requests
-        ]
-        inputs = {
-            "input_ids": torch.tensor(padded_tokens, device=self.model.device),
-            "attention_mask": torch.tensor([[0] * (maxlen - len(req.tokens)) + [1] * len(req.tokens) for req in self.active_requests], device=self.model.device),
-        }
-
-        self.attn_mask = inputs["attention_mask"]
-
-        # logger.info(f"Forward pass for {self.active_requests_count} active requests.")
-        with self._timeit("prefill_fwd"):
-            logits, past_key_values = self.model.forward(inputs)
-        return logits, past_key_values
-    
-    def _decode(self, past_key_values) -> typing.Tuple[torch.Tensor, typing.Any]:
-        # logger.info(f"Decoding for {self.active_requests_count} active requests.")
-        # feed the last token and kv cache of each active request to the model
-        last_tokens = torch.tensor(
-            [[req.tokens[-1]] for req in self.active_requests],
+        new = self.new_requests
+        maxlen = max(len(req.tokens) for req in new)
+        input_ids = torch.tensor(
+            [[self.model.pad_token] * (maxlen - len(r.tokens)) + r.tokens for r in new],
             device=self.model.device,
         )
-        inputs = {"input_ids": last_tokens, "attention_mask": self.attn_mask}
+        new_mask = torch.tensor(
+            [[0] * (maxlen - len(r.tokens)) + [1] * len(r.tokens) for r in new],
+            device=self.model.device,
+        )
+        with self._timeit("prefill_fwd"):
+            logits, new_kv = self.model.forward(
+                {"input_ids": input_ids, "attention_mask": new_mask, "position_ids": self._position_ids(new_mask)})
+        if self.past_key_values is None:
+            self.past_key_values, self.attn_mask = new_kv, new_mask
+        else:
+            self._splice(new_kv, new_mask)
+        return logits
+
+    def _decode(self) -> torch.Tensor:
+        last_tokens = torch.tensor([[r.tokens[-1]] for r in self.active_requests], device=self.model.device)
+        decode_mask = torch.cat(
+            [self.attn_mask, torch.ones((self.active_requests_count, 1), dtype=self.attn_mask.dtype, device=self.model.device)],
+            dim=-1)
+        pos = self._position_ids(decode_mask)[:, -1:]   # position of just the new token, per row
         with self._timeit("decode_fwd"):
-            logits, past_key_values = self.model.forward(inputs, past_key_values=past_key_values)
-        return logits, past_key_values
+            logits, past_key_values = self.model.forward(
+                {"input_ids": last_tokens, "attention_mask": decode_mask, "position_ids": pos},
+                past_key_values=self.past_key_values)
+        self.past_key_values = past_key_values
+        self.attn_mask = decode_mask     # keeps attn_mask.shape[1] == cache seq length
+        return logits
+
+    @staticmethod
+    def _lpad_seq(t, m):
+        return F.pad(t, (0, 0, m - t.shape[2], 0))
+
+    def _splice(self, new_kv, new_mask):
+        m = max(self.attn_mask.shape[1], new_mask.shape[1])
+        for old, fresh in zip(self.past_key_values.layers, new_kv.layers):
+            old.keys = torch.cat([self._lpad_seq(old.keys, m), self._lpad_seq(fresh.keys, m)], dim=0)
+            old.values = torch.cat([self._lpad_seq(old.values, m), self._lpad_seq(fresh.values, m)], dim=0)
+        self.attn_mask = torch.cat(
+            [F.pad(self.attn_mask, (m - self.attn_mask.shape[1], 0)),
+             F.pad(new_mask, (m - new_mask.shape[1], 0))], dim=0)
+
+    def _trim_left_pad(self):
+        if self.attn_mask is None or self.attn_mask.numel() == 0:
+            return
+        lead = int(self.attn_mask.argmax(dim=1).min().item())  # first real col per row -> common min
+        if lead <= 0:
+            return
+        self.attn_mask = self.attn_mask[:, lead:]
+        for layer in self.past_key_values.layers:
+            layer.keys = layer.keys[:, :, lead:, :]
+            layer.values = layer.values[:, :, lead:, :]
+
+    def _evict_finished(self):
+        keep = [i for i, r in enumerate(self.active_requests) if not r.finished]
+        if not keep:
+            self.past_key_values, self.attn_mask, self.active_requests = None, None, []
+            return
+        idx = torch.tensor(keep, device=self.model.device)
+        for layer in self.past_key_values.layers:
+            layer.keys = layer.keys.index_select(0, idx)
+            layer.values = layer.values.index_select(0, idx)
+        self.attn_mask = self.attn_mask.index_select(0, idx)
+        self.active_requests = [self.active_requests[i] for i in keep]
+        self._trim_left_pad()   # reclaim columns the departed (longest) rows were padding for
 
     async def submit(self, prompt: str, max_new_tokens: int, temperature: float = 0.6, top_p: float = 0.9) -> InferenceRequest:
         if self.waiting_requests_count >= self.max_waiting_requests:
@@ -159,6 +201,7 @@ class ContinuousBatchingEngine:
                     request.update_status("active")
                     # logger.info(f"Moving request {request.request_id} to active requests.")
                     self.active_requests.append(request)
+                    self.new_requests.append(request)   # needs prefill + splice on the next step
                     self.dirty = True
 
             # If active requests are not there, waiting for some time before checking again
@@ -179,41 +222,33 @@ class ContinuousBatchingEngine:
     def _step(self):
         if self._active_empty():
             return
-        
-        # prefill if self.dirty, else decode
-        if self.dirty:
-            # logger.info(f"Dirty flag is set. Prefilling for active requests.")
-            logits, past_key_values = self._prefill()
-            self.past_key_values = past_key_values
+
+        if self.new_requests:
+            batch = self.new_requests
+            logits = self._prefill()
+            self.new_requests = []
             self.dirty = False
         else:
-            # logger.info(f"Dirty flag is not set. Decoding for active requests.")
-            logits, past_key_values = self._decode(self.past_key_values)
-            self.past_key_values = past_key_values
+            batch = self.active_requests
+            logits = self._decode()
 
-        temps = torch.tensor([r.temperature for r in self.active_requests], device=self.model.device).unsqueeze(1)
-        tops  = torch.tensor([r.top_p for r in self.active_requests], device=self.model.device).unsqueeze(1)
-
+        temps = torch.tensor([r.temperature for r in batch], device=self.model.device).unsqueeze(1)
+        tops  = torch.tensor([r.top_p for r in batch], device=self.model.device).unsqueeze(1)
         with self._timeit("sample"):
             next_ids = sample_next_token_batched(logits[:, -1, :], temperature=temps, top_p=tops).tolist()
 
-        for i, request in enumerate(self.active_requests):
+        for i, request in enumerate(batch):
             next_token_id = next_ids[i]
             if (str(next_token_id) == str(self.model.eos_token)) or ((len(request.tokens) - request.prompt_len) >= request.max_tokens):
-                # logger.info(f"Request {request.request_id} finished. Marking as finished and removing from active requests.")
                 request.mark_finished()
                 request.add_token(None)
                 request.queue.put_nowait(None)
-                self.dirty = True
             else:
-                # logger.info(f"Request {request.request_id} generated token id {next_token_id}. Adding to tokens.")
                 request.add_token(next_token_id)
                 request.queue.put_nowait(next_token_id)
 
-        self.active_requests = [req for req in self.active_requests if not req.finished]
-
-        if not self.dirty and self.attn_mask is not None and self.active_requests_count > 0:
-            self.attn_mask = torch.cat([self.attn_mask, torch.ones((self.active_requests_count, 1), dtype=self.attn_mask.dtype, device=self.model.device)], dim=-1)
+        if any(r.finished for r in self.active_requests):
+            self._evict_finished()
 
     def _reset_batch(self):
         """Recover from a failed step: fail the in-flight batch (so clients unblock),
@@ -223,6 +258,7 @@ class ContinuousBatchingEngine:
                 req.mark_error("engine step failed (likely CUDA OOM)")
                 req.queue.put_nowait(None)   # sentinel so the client's stream unblocks
         self.active_requests = []
+        self.new_requests = []
         self.past_key_values = None
         self.attn_mask = None
         self.dirty = False

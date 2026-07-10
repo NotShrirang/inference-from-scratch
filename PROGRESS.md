@@ -60,9 +60,24 @@ limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks
 
 ### Step 4 — continuous / in-flight batching ✅
 - `app/batching/engine.py`: one background loop owns the model; requests submit to a queue and stream
-  tokens out via a per-request `asyncio.Queue`. Cache strategy = **recompute-on-rebatch**: pure decode
-  steps reuse a merged KV cache; membership changes (admit/evict) set `dirty` → re-prefill over the
-  active set's *full* sequences (no DynamicCache surgery). Endpoint: `/generate-continuous-batch`.
+  tokens out via a per-request `asyncio.Queue`. Endpoint: `/generate-continuous-batch`.
+- Cache strategy = **KV cache surgery** (upgraded from the original recompute-on-rebatch):
+  - **admit** = prefill *only* the newly-arrived requests (`_prefill` over `new_requests`) and **splice**
+    their KV into the active cache (left-pad the seq dim to match, `cat` on the batch dim). In-flight
+    requests keep their KV — no re-prefill of the whole batch on every admit.
+  - **evict** = slice finished rows out of the cache/mask (`index_select`), then `_trim_left_pad` drops
+    leading columns that are padding for every remaining row (else the shared seq dim only grows).
+  - **positions** = pass mask-derived `position_ids` on every forward. RoPE is baked into the stored
+    keys at forward time, so a spliced request needs its *own* position (from its mask), not the shared
+    cache length — without this, spliced requests decode at the wrong RoPE offset (subtly wrong output,
+    verified `Paris is` vs correct `Paris.`).
+  - transformers 5.x note: `DynamicCache` exposes per-layer tensors at `.layers[l].keys/.values`
+    (not the old `.key_cache/.value_cache` lists).
+- **The OOM that dogged every run was `no_grad`, not the cache logic.** `model.forward` ran without
+  `torch.no_grad()`, so each step built an autograd graph; since the KV cache is a graph output fed back
+  in, the whole graph + activations stayed pinned and grew every decode token → VRAM climbed to 7.6 GB
+  on a 0.5B model → OOM. One decorator (`@torch.no_grad()` on `ChatModel.forward`) fixed it and also
+  shaved graph-building overhead. `eval()` mode does **not** disable grad tracking — a separate concern.
 - Result (Qwen2.5-0.5B, sampling) vs step-2 baseline, concurrency sweep @ conc 16:
 
   | metric @ conc 16 | step 2 (per-request) | step 4 (continuous batch, batch_size=16) |
@@ -77,15 +92,21 @@ limited topics Claude quizzes me on (no code). See [README](README.md#benchmarks
     as requests queue for a slot (TTFT 0.08s → 25s at conc 256). Lesson: past the knee you buy only
     latency, no throughput — SLO operating point ≈ the knee.
   - At concurrency 1 CB is slightly *slower* (47 vs 86 tok/s) — engine overhead with no batch to amortize.
+  - _(Numbers above are the original recompute-on-rebatch build — `step4_continuous_batching.{json,png}`.
+    The post-fix engine (cache surgery + `no_grad`) peaks **~788 tok/s @ conc 64**, 0 errors through 64,
+    sheds 429 beyond — see the capstone table and `capstone_custom.json`.)_
   - Bug trail that got it working: persist the cache across steps; grow the attn mask once per step
     (guarded, skip after eviction); set `padding_side` on the tokenizer; finish on *generated* count;
     re-prefill from full `req.tokens` (not the prompt) so rebatch keeps context; sampling (not argmax)
     to avoid the base model's greedy echo.
 
 ### Step 5 — paged / block KV cache 🔎 explored, not shipped (→ read track)
-- Attempted the two pieces on HF's `DynamicCache`: **evict** = slice finished rows out; **admit** =
-  prefill only the new request and **splice** its KV in (left-pad seq dim, cat on batch dim). Both are
-  doable but require reaching into `DynamicCache.key_cache`/`.value_cache` internals — fragile.
+- The two cache-surgery pieces on HF's `DynamicCache` are now **shipped in the step-4 engine**: **evict**
+  = slice finished rows out (`index_select` + `_trim_left_pad`); **admit** = prefill only the new request
+  and **splice** its KV in (left-pad seq dim, `cat` on batch dim). What it took to make them correct:
+  mask-derived `position_ids` (RoPE offset), `_trim_left_pad` (bound the growing seq dim), and per-layer
+  `.layers[l].keys/.values` access (transformers 5.x). Fragile but working — this is *cache surgery*, not
+  *paging*: the cache is still one contiguous rectangular tensor, so it still pads and reallocates.
 - Also tried **auto-sizing `batch_size`** from VRAM: analytical (weights + KV + activation) over-predicted
   wildly (8192!), a profiling probe of one prefill still over-predicted (230 vs real OOM at ~32).
 - **Why it's parked:** the pure-Python-on-HF version can't win. True paging needs a scatter-read
@@ -134,8 +155,10 @@ attribute correctly), averaged over N requests.
 - **torch.compile explored → deferred (step 11):** `mode="reduce-overhead"` (CUDA graphs) on the
   dynamic-shape decode loop recompiled ~every step → **15× slower** (decode 12 → 178 ms, run 13 s → 6 min).
   Compile needs static-shape bucketing (fixed batch + seq buckets) to pay off; deferred to the read track
-  with paging. Note: a `/load` bug reloads weights to VRAM on every call (constructs `ChatModel` before
-  the already-loaded check) — leaks VRAM across a session; suspect for the conc-64 OOM below.
+  with paging. Note: the recurring OOM turned out to be the missing `torch.no_grad()` in `forward`
+  (autograd graph pinned by the growing KV cache — see Step 4 note), *not* the separate `/load` bug
+  (constructs `ChatModel` before the already-loaded check → leaks VRAM across a session); both are real,
+  but `no_grad` was the one filling the card.
 
 ## Step 15 — capstone: custom engine vs vLLM ✅
 
@@ -145,20 +168,22 @@ GPU (they can't co-reside — vLLM grabs ~90% VRAM). `benchmarks/capstone_{custo
 
 | metric | Custom | vLLM | gap |
 |--------|------:|------:|----:|
-| tok/s @ conc 1 | 73 | 270 | 3.7× |
-| tok/s peak | 593 (@16) | 9370 (@256) | ~16× |
-| TTFT p50 @ conc 1 | 119 ms | 9 ms | 13× |
-| TPOT p95 @ conc 1 | 11 ms | 3.7 ms | 3× |
-| errors @ conc 256 | ~1300 (sheds) | 0 | — |
+| tok/s @ conc 1 | 90 | 270 | 3.0× |
+| tok/s peak | 788 (@64) | 9370 (@256) | ~12× |
+| TTFT p50 @ conc 1 | 114 ms | 9 ms | 13× |
+| TPOT p95 @ conc 1 | 8.8 ms | 3.7 ms | 2.4× |
+| errors @ conc 256 | 902 (sheds) | 0 | — |
+
+_(Custom numbers are the post-fix engine: cache surgery + `no_grad` — see Step 4/5 notes.)_
 
 Gap attribution (the payoff — every piece maps to a deferred technique):
-- **17× throughput + never shedding → PagedAttention** (step 5): vLLM packs hundreds of sequences into
+- **~12× throughput + never shedding → PagedAttention** (step 5): vLLM packs hundreds of sequences into
   8 GB (fixed blocks, no padding/fragmentation), batch grows to 256+; ours caps at 16 and sheds.
-- **TPOT ~3× → fused kernels + CUDA graphs + FlashAttention** (step 11 / kernel track): vLLM's decode is
+- **TPOT ~2.4× → fused kernels + CUDA graphs + FlashAttention** (step 11 / kernel track): vLLM's decode is
   one graph-captured fused kernel; ours is eager per-op PyTorch.
-- **TTFT 13× → partly fast prefill, but mostly a fixable bug**: our `stream_generator` polls the queue
-  with `await asyncio.sleep(0.1)` instead of `await queue.get()` → up to 100 ms before the first token
-  flushes. Fix = block on the queue; should drop TTFT ~119 ms → ~20 ms without paging.
+- **TTFT 13× → fast prefill kernel + leaner serving path.** Originally suspected the `stream_generator`'s
+  `await asyncio.sleep(0.1)` poll, but removing it barely moved TTFT (119 → ~114 ms) — the gap is
+  fundamental: eager PyTorch prefill + a Python/ASGI serving path vs vLLM's fused prefill + C++ path.
 
 Verdict: paging owns the capacity/throughput axis; fused kernels own the per-token-latency axis — both
 are the read/interview-track items, now understood from having built a server without them.

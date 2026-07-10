@@ -21,8 +21,11 @@ class ChatModel(nn.Module):
     def __str__(self):
         return f"ChatModel({self.model_name})"
 
+    @torch.no_grad()
     def forward(self, inputs, past_key_values=None):
-        # inputs = self.tokenizer(input_text, return_tensors="pt").to(self.model.device)
+        # no_grad is essential for serving: without it every forward builds an autograd
+        # graph, and since the KV cache is a graph output fed back in each step, the whole
+        # graph + activations stays pinned and grows every decode token -> OOM.
         outputs = self.model(**inputs, past_key_values=past_key_values, use_cache=True)
         return outputs.logits, outputs.past_key_values
 
