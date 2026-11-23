@@ -1,7 +1,7 @@
 [project]
 name = "learning-inference-optimization"
 version = "0.1.0"
-description = "Add your description here"
+description = "An LLM inference server built from scratch, one benchmarked optimization at a time"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -1,87 +1,62 @@
-# Inference Optimization Ladder
+# Inference Optimization Plan
 
-Philosophy: build each optimization **into the FastAPI server** (`app/`), measure it on
-the benchmark board, then read the paper that formalizes it. Own the primitive before the name.
+How I work: I add each optimization **directly into the FastAPI server** (`app/`), measure it on
+the benchmark board, and write down what I learned. Every step changes the server and is
+benchmarked. I do not write separate one-off scripts for experiments.
 
-Two tracks:
-- **Build track** — every step changes the server and is benchmarked. No standalone scripts.
-- **Read & interview track** — kernel-level, hardware-limited, or theory-heavy topics that don't
-  belong in the server (or can't run on one 8 GB GPU). No code — Claude interviews me to check I
-  actually understand them.
+Hardware: one GPU with about 8 GB of memory, so I use small models with normal (softmax) attention,
+such as Qwen2.5-0.5B.
 
-Hardware: single ~8 GB GPU; small softmax-attention models (Qwen2.5-0.5B, etc.).
-
----
-
-## Build track — integrated into the FastAPI server
-
-1. **Naive generation loop** — token-by-token, no cache. `/generate`. ✅
-2. **KV cache** — prefill + single-token decode + real streaming. `/generate-stream`. ✅
-3. **Static batching** — N prompts through one forward pass. `/generate-batch`. ✅
-4. **Continuous / in-flight batching** — a background scheduler + request queue that merges
-   independent in-flight requests into a rolling batch: admit on arrival, step all active
-   sequences together, evict on EOS, stream each out. The single biggest serving win — turns the
-   flat concurrency curve from step 2 into a climbing one.
-5. **Paged / block KV cache** — a block allocator (fixed-size blocks + free list) in the model
-   manager so the cache stops fragmenting and more sequences fit. PagedAttention's *idea*, in Python.
-6. **Prefix caching** — detect shared prompt prefixes (e.g. a common system prompt) across requests
-   and reuse their KV instead of recomputing. Measure the TTFT collapse on shared-prefix workloads.
-7. **Speculative decoding** — load a small draft model beside the target; draft k tokens, verify in
-   one target forward pass, accept the longest correct run. Measure acceptance rate and tok/s gain.
-8. **Scheduling & admission control** — request priorities, a max-concurrent-sequences cap,
-   preemption, and **chunked prefill** so a long prompt doesn't stall decode or blow up everyone's TTFT.
-9. **Serve a quantized model** — wire library quantization (bitsandbytes / AWQ) **and** KV-cache
-   quantization into `/load`, so the endpoint actually serves int8/int4 and it lands on the board.
-   (Quantization becomes a serving feature, not a one-off script.)
-10. **Attention-variant model swap** — serve GQA / MQA / sliding-window models via `/load`; measure
-    how a smaller KV cache raises the max number of concurrent sequences before OOM.
-11. **Compilation** — apply `torch.compile` + CUDA graphs at load time; measure the TTFT/TPOT change
-    (especially the launch-overhead win at decode). Use the compiler — don't write kernels.
-12. **Observability & SLO tuning** — wire `prometheus.yml` + middleware to export
-    TTFT / TPOT / throughput / queue-depth / KV-utilization; build the latency–throughput Pareto and
-    a **goodput** (SLO-aware) view to pick the right max-concurrency.
-13. **Structured / guided decoding** — JSON / grammar-constrained generation on the endpoint (logit
-    processors / outlines-style); measure the overhead vs free generation.
-14. **OpenAI-compatible API** — make the server speak the OpenAI completions/chat protocol so standard
-    clients and load tools work against it; optional multi-replica request routing.
-15. **Capstone — measure against vLLM** — deploy the same model on vLLM (OpenAI-compatible), tune it
-    (`max-num-seqs`, `gpu-memory-utilization`), and benchmark it on the board next to the hand-built
-    server. See how close you got and exactly where the remaining gap lives.
+Status: ✅ done · 🔎 tried, paused · ⏸ postponed · ⬜ not started. Details and results are in
+[PROGRESS.md](PROGRESS.md).
 
 ---
 
-## Read & interview track (Claude quizzes me — no code, no server changes)
+## Steps
 
-These are real and important, but they're either kernel-level, theory, or need hardware I don't have.
-Claude tests my understanding instead of me building them.
-
-- **Quantization theory** — symmetric/asymmetric, per-tensor/per-channel/per-group, GPTQ / AWQ /
-  SmoothQuant, FP8. *(Built int4-by-hand as a standalone experiment ✅ — now own the theory.)*
-- **GPU kernels & Triton** — fused softmax ✅ (standalone), fused attention, fused dequant-matmul,
-  the FlashAttention tiling/online-softmax trick.
-- **Roofline model** — arithmetic intensity, memory-bandwidth vs compute bound, why decode is
-  bandwidth-bound and prefill is compute-bound.
-- **PagedAttention & FlashAttention internals** — the kernel mechanics under steps 5 and the attention path.
-- **Parallelism** *(hardware-limited: 1 GPU)* — tensor / pipeline / expert parallelism, multi-node,
-  prefill/decode disaggregation.
-- **Model-level** — distillation (running a distilled model already), pruning/sparsity, MoE serving,
-  choosing inference-friendly architectures.
+1. **Simple generation loop.** Generate one token at a time with no cache. `/generate`. ✅
+2. **KV cache.** Process the prompt once, then compute only one new token per step, and stream the
+   output. `/generate-stream`. ✅
+3. **Static batching.** Run N prompts through the model together. `/generate-batch`. ✅
+4. **Continuous batching.** A background scheduler and a request queue. Live requests are put into
+   one batch: new requests join when they arrive, all active requests are processed together, and
+   requests leave when they finish. Each request streams its own output. This gives the biggest
+   gain for serving many users. ✅
+5. **Paged KV cache.** Store the KV cache in fixed-size blocks with a list of free blocks, so memory
+   does not fragment and more requests fit. This is the main idea of PagedAttention, written in
+   Python. 🔎
+6. **Prefix caching.** Find prompts that start with the same text (for example the same system
+   prompt) and reuse their KV cache instead of computing it again. Measure how much faster the
+   first token arrives. ⬜
+7. **Speculative decoding.** Load a small draft model next to the main model. The draft model guesses
+   k tokens, the main model checks them all in one pass, and the correct ones are kept. Measure how
+   many guesses are accepted and the change in tokens/s. ⬜
+8. **Scheduling and admission control.** Request priorities, a limit on how many requests run at
+   once, pausing requests when needed, and **chunked prefill** (processing a long prompt in parts)
+   so a long prompt does not slow down everyone else. ✅ (limit + bounded queue + HTTP 429 done)
+9. **Serve a quantized model.** Add library quantization (bitsandbytes or AWQ) **and** KV cache
+   quantization to `/load`, so the server runs int8/int4 models and the results go on the board.
+   ⬜ **next**
+10. **Different attention types.** Serve models with GQA, MQA or sliding-window attention through
+    `/load`. Measure how a smaller KV cache lets more requests run at once before memory runs out. ⬜
+11. **Compilation.** Use `torch.compile` and CUDA graphs when the model loads. Measure the change in
+    TTFT and TPOT. I use the compiler only. I do not write GPU kernels by hand. ⏸
+12. **Monitoring and latency targets.** Add Prometheus metrics for TTFT, TPOT, throughput, queue
+    size and KV cache usage. Plot latency against throughput, and measure **goodput** (the
+    throughput of requests that meet a latency target) to choose the best request limit. ⬜
+13. **Structured output.** Generate output that follows a JSON schema or grammar. Measure the extra
+    cost compared with normal generation. ⬜
+14. **OpenAI-compatible API.** Support the OpenAI completions and chat API format, so standard
+    clients and load-testing tools work with the server. Optional: send requests to more than one
+    server copy. ⬜
+15. **Capstone: compare with vLLM.** Run the same model on vLLM, tune its settings (`max-num-seqs`,
+    `gpu-memory-utilization`), and benchmark it next to my server. See how close I got and where
+    the difference comes from. ✅
 
 ---
 
-## Papers (read once the matching step is built)
+## Out of scope
 
-- Orca — continuous batching → step 4
-- vLLM / PagedAttention → steps 5–6
-- Speculative decoding; Medusa / EAGLE → step 7
-- AWQ / GPTQ / SmoothQuant → step 9
-- GQA → step 10
-- FlashAttention → kernel (interview) track
-
----
-
-## Parked: standalone experiments already done
-
-Kept for reference, but off the main (server) path:
-- `quntization_script.py` + `infer_quantized.py` — by-hand int8/int4 weight quantization (step-4 era).
-- `softmax_kernel.py` — Triton fused softmax, ~parity with `torch.softmax`.
+This repo does not cover custom GPU kernel work: a real PagedAttention kernel, fused kernels,
+FlashAttention, or using more than one GPU. These do not fit a Python/PyTorch server or a single
+8 GB GPU. The vLLM comparison showed that most of the speed difference comes from these.
