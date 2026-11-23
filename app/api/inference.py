@@ -142,14 +142,8 @@ async def generate_text_continuous_batch(request: Request, model_name: str = "Qw
         req = await engine.submit(prompt=input_text, max_new_tokens=max_length, temperature=temperature, top_p=top_p)
 
         async def stream_generator():
-            while not req.finished:
-                if not req.queue.empty():
-                    token = await req.queue.get()
-                    if token is None:
-                        break
-                    yield f"data: {engine.model.tokenizer.decode(token, skip_special_tokens=True)}\n\n"
-                else:
-                    await asyncio.sleep(0.1)
+            while (token := await req.queue.get()) is not None:
+                yield f"data: {engine.model.tokenizer.decode(token, skip_special_tokens=True)}\n\n"  
             if req.status == "error":
                 raise RuntimeError(getattr(req, "error", "generation failed"))
         
