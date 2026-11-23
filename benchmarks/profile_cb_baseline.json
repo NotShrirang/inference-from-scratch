@@ -1,0 +1,229 @@
+{
+  "name": "cb_baseline",
+  "created": "2026-11-23T11:13:15",
+  "prof_file": "benchmarks/profile_cb_baseline.prof",
+  "config": {
+    "model": "Qwen/Qwen2.5-0.5B",
+    "n": 100,
+    "concurrency": 8,
+    "max_length": 64,
+    "batch_size": 16,
+    "warmup": 1,
+    "wall_s": 16.22
+  },
+  "total_s": 16.0674,
+  "buckets": {
+    "engine_loop": {
+      "s": 15.7507,
+      "calls": 957,
+      "ms_per_call": 16.4584,
+      "share_pct": 98.03
+    },
+    "step": {
+      "s": 15.7296,
+      "calls": 940,
+      "ms_per_call": 16.7336,
+      "share_pct": 97.9
+    },
+    "forward": {
+      "s": 13.5658,
+      "calls": 940,
+      "ms_per_call": 14.4317,
+      "share_pct": 84.43
+    },
+    "decode": {
+      "s": 12.8208,
+      "calls": 879,
+      "ms_per_call": 14.5856,
+      "share_pct": 79.79
+    },
+    "prefill": {
+      "s": 1.0509,
+      "calls": 61,
+      "ms_per_call": 17.2279,
+      "share_pct": 6.54
+    },
+    "sampling": {
+      "s": 0.5259,
+      "calls": 940,
+      "ms_per_call": 0.5595,
+      "share_pct": 3.27
+    },
+    "step_tensor_copy": {
+      "s": 0.577,
+      "calls": 1880,
+      "ms_per_call": 0.3069,
+      "share_pct": 3.59
+    },
+    "step_tolist": {
+      "s": 0.5524,
+      "calls": 940,
+      "ms_per_call": 0.5877,
+      "share_pct": 3.44
+    },
+    "splice": {
+      "s": 0.0784,
+      "calls": 59,
+      "ms_per_call": 1.3294,
+      "share_pct": 0.49
+    },
+    "evict": {
+      "s": 0.0435,
+      "calls": 55,
+      "ms_per_call": 0.7901,
+      "share_pct": 0.27
+    },
+    "trim_left_pad": {
+      "s": 0.0105,
+      "calls": 53,
+      "ms_per_call": 0.1981,
+      "share_pct": 0.07
+    },
+    "position_ids": {
+      "s": 0.0585,
+      "calls": 940,
+      "ms_per_call": 0.0623,
+      "share_pct": 0.36
+    },
+    "submit": {
+      "s": 0.0709,
+      "calls": 100,
+      "ms_per_call": 0.7092,
+      "share_pct": 0.44
+    },
+    "endpoint_handler": {
+      "s": 0.0897,
+      "calls": 100,
+      "ms_per_call": 0.8966,
+      "share_pct": 0.56
+    },
+    "stream_generator": {
+      "s": 0.072,
+      "calls": 7112,
+      "ms_per_call": 0.0101,
+      "share_pct": 0.45
+    }
+  },
+  "top_tottime": [
+    {
+      "func": "~:0(<built-in method torch._C._nn.linear>)",
+      "calls": 158860,
+      "tottime_s": 2.3425,
+      "cumtime_s": 2.3425
+    },
+    {
+      "func": "~:0(<built-in method torch._C._nn.scaled_dot_product_attention>)",
+      "calls": 22560,
+      "tottime_s": 1.0685,
+      "cumtime_s": 1.0685
+    },
+    {
+      "func": "modeling_qwen2.py:258(forward)",
+      "calls": 46060,
+      "tottime_s": 1.0581,
+      "cumtime_s": 2.6377
+    },
+    {
+      "func": "modeling_qwen2.py:123(apply_rotary_pos_emb)",
+      "calls": 22560,
+      "tottime_s": 0.7862,
+      "cumtime_s": 1.7479
+    },
+    {
+      "func": "~:0(<method 'to' of 'torch._C.TensorBase' objects>)",
+      "calls": 97862,
+      "tottime_s": 0.7079,
+      "cumtime_s": 0.7079
+    },
+    {
+      "func": "~:0(<built-in method torch.cat>)",
+      "calls": 94950,
+      "tottime_s": 0.6642,
+      "cumtime_s": 0.6642
+    },
+    {
+      "func": "~:0(<built-in method torch.tensor>)",
+      "calls": 6062,
+      "tottime_s": 0.6476,
+      "cumtime_s": 0.6476
+    },
+    {
+      "func": "module.py:1783(_call_impl)",
+      "calls": 298920,
+      "tottime_s": 0.5666,
+      "cumtime_s": 13.5535
+    },
+    {
+      "func": "~:0(<method 'tolist' of 'torch._C.TensorBase' objects>)",
+      "calls": 1240,
+      "tottime_s": 0.5563,
+      "cumtime_s": 0.5563
+    },
+    {
+      "func": "modeling_qwen2.py:116(rotate_half)",
+      "calls": 45120,
+      "tottime_s": 0.5553,
+      "cumtime_s": 0.8974
+    },
+    {
+      "func": "modeling_qwen2.py:206(forward)",
+      "calls": 22560,
+      "tottime_s": 0.4781,
+      "cumtime_s": 6.909
+    },
+    {
+      "func": "modeling_qwen2.py:280(forward)",
+      "calls": 22560,
+      "tottime_s": 0.4234,
+      "cumtime_s": 12.0629
+    },
+    {
+      "func": "~:0(<method 'reshape' of 'torch._C.TensorBase' objects>)",
+      "calls": 65328,
+      "tottime_s": 0.408,
+      "cumtime_s": 0.408
+    },
+    {
+      "func": "module.py:1955(__getattr__)",
+      "calls": 665520,
+      "tottime_s": 0.3955,
+      "cumtime_s": 0.3955
+    },
+    {
+      "func": "~:0(<method 'mean' of 'torch._C.TensorBase' objects>)",
+      "calls": 46060,
+      "tottime_s": 0.3268,
+      "cumtime_s": 0.3268
+    },
+    {
+      "func": "~:0(<method 'pow' of 'torch._C.TensorBase' objects>)",
+      "calls": 46060,
+      "tottime_s": 0.3165,
+      "cumtime_s": 0.3165
+    },
+    {
+      "func": "module.py:1775(_wrapped_call_impl)",
+      "calls": 298920,
+      "tottime_s": 0.2748,
+      "cumtime_s": 13.557
+    },
+    {
+      "func": "modeling_qwen2.py:46(forward)",
+      "calls": 22560,
+      "tottime_s": 0.2517,
+      "cumtime_s": 1.7337
+    },
+    {
+      "func": "~:0(<built-in method torch.rsqrt>)",
+      "calls": 46060,
+      "tottime_s": 0.2336,
+      "cumtime_s": 0.2336
+    },
+    {
+      "func": "linear.py:130(forward)",
+      "calls": 158860,
+      "tottime_s": 0.1899,
+      "cumtime_s": 2.6585
+    }
+  ]
+}

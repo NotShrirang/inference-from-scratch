@@ -153,7 +153,8 @@ benchmarked on the board. The plots are in the [README](README.md#results).
 ## Profiling and small optimizations
 
 Tools: `scripts/profile_service.py` (sends requests to the running engine) and the
-`/engine-profile` endpoint. I time each operation with `torch.cuda.synchronize()`, so the GPU time
+`/engine-profile` endpoint for the engine timers, and `scripts/profile_cprofile.py` for a full
+cProfile of the endpoint (see the cProfile section below). I time each operation with `torch.cuda.synchronize()`, so the GPU time
 is counted in the right place, and I average over N requests.
 
 - **Where the time goes** (Qwen2.5-0.5B, 100 requests, 8 at a time): **generating tokens
@@ -173,6 +174,61 @@ is counted in the right place, and I average over N requests.
   sizes and sequence lengths). Also: the repeated out-of-memory error was caused by the missing
   `torch.no_grad()` in `forward` (see the step 4 notes), not by the separate `/load` bug that used
   more GPU memory over time. Both bugs were real, but `no_grad` was the one that filled the GPU.
+
+### cProfile of `/generate-continuous-batch` (baseline)
+
+The engine timers above only measure the parts I wrapped by hand. To see everything, I profiled the
+endpoint with cProfile. `scripts/profile_cprofile.py run` starts its own server on port 8002, loads
+the model, sends one warm-up request, and turns the profiler on only while the test requests run.
+So model loading, imports and startup are not in the profile.
+
+Setup: Qwen2.5-0.5B, `batch_size=16`, 100 requests, 8 at a time, `max_length=64`, engine timers off.
+Files: `benchmarks/profile_cb_baseline.{prof,json}`.
+
+| part | seconds | share | calls | ms per call |
+|------|------:|------:|------:|------:|
+| engine loop (`_run`) | 15.75 | 98.0% | 957 | 16.5 |
+| ↳ `model.forward` | 13.57 | 84.4% | 940 | 14.4 |
+| ↳↳ decode | 12.82 | 79.8% | 879 | 14.6 |
+| ↳↳ prefill | 1.05 | 6.5% | 61 | 17.2 |
+| ↳ sampling | 0.53 | 3.3% | 940 | 0.56 |
+| ↳ `torch.tensor` for temps/tops in `_step` | 0.58 | 3.6% | 1880 | 0.31 |
+| ↳ `.tolist()` in `_step` | 0.55 | 3.4% | 940 | 0.59 |
+| ↳ cache editing (`_splice` + `_evict_finished` + `_trim_left_pad` + `_position_ids`) | 0.19 | 1.2% | | |
+| endpoint handler + `submit` + `stream_generator` | 0.23 | 1.5% | | |
+
+Total profiled time was 16.1 s, and the requests took 16.2 s of wall time.
+
+What I learned:
+- **The endpoint code costs almost nothing.** The handler, `submit`, tokenizing and streaming
+  together take about 1.5%. FastAPI is not the problem.
+- **My KV cache editing is cheap.** Splice, evict, trim and position ids together take about 1%.
+- **The forward pass is 85% of the time, and most of it is CPU work.** Most of that time goes to
+  HuggingFace's Python layer code: about 159k `linear` calls, RoPE (`apply_rotary_pos_emb` +
+  `rotate_half`), RMSNorm with dtype casts, and the `nn.Module` call overhead. With CUDA, time spent
+  waiting for the GPU shows up where the CPU has to wait for results. Here that is the `torch.tensor`
+  copies to the GPU and `.tolist()`, and they add up to only about 7%. So the GPU waits for Python
+  most of the time, not the other way around. This is direct evidence that the TPOT gap to vLLM
+  comes from kernel launch overhead, and that CUDA graphs (step 11) is the right fix.
+- **Prefill is now only 6.5%.** The engine timers above showed 17–23% before KV cache editing,
+  when the batch was recomputed every time it changed. This supports the cache editing change.
+- **A small easy win:** `_step` builds the `temps` and `tops` tensors from Python lists on every
+  step. That is two copies to the GPU per step, and each copy also waits for the GPU. Building them
+  only when the batch changes would save up to about 3.6%.
+- **Something cProfile cannot show:** `stream_generator` sleeps 0.1 s whenever the token queue is
+  empty. That uses no CPU, so it is not in the profile, but it can delay tokens by up to 100 ms.
+- **Caveats:** cProfile adds overhead to every Python function call, so the CPU-side numbers are
+  higher than in a normal run. The shares are still useful. Between two runs with the same code, the
+  big parts changed by only 1–3%, but prefill changed by up to 20% per call, because it depends on
+  how requests happen to arrive together.
+
+To compare a change against this baseline:
+
+```bash
+python scripts/profile_cprofile.py run --name <my_change>
+python scripts/profile_cprofile.py compare benchmarks/profile_cb_baseline.json \
+    benchmarks/profile_<my_change>.json
+```
 
 ## Step 15: capstone, my engine vs vLLM ✅
 
