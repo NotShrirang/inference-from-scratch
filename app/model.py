@@ -8,12 +8,13 @@ from app.api.utils import sample_next_token
 
 
 class ChatModel(nn.Module):
-    def __init__(self, model_name, device='cuda'):
+    def __init__(self, model_name, device='cuda', dtype=torch.bfloat16):
         super(ChatModel, self).__init__()
         self.model_name = model_name
         self.device = device
+        self.dtype = dtype
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype).to(device)
         self.pad_token = int(self.tokenizer(self.tokenizer.pad_token, return_tensors="pt").input_ids[0][0].item()) if self.tokenizer.pad_token else None
         self.eos_token = int(self.tokenizer(self.tokenizer.eos_token, return_tensors="pt").input_ids[0][0].item()) if self.tokenizer.eos_token else None
         logger.info(f"ChatModel initialized with {model_name}")

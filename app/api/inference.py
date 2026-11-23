@@ -15,7 +15,24 @@ from app.batching.engine import ContinuousBatchingEngine
 router = APIRouter()
 
 @router.post("/load")
-async def load_model(request: Request, batch_size: int = 16, model_name: str = "Qwen/Qwen2.5-0.5B", max_length: int = 50, profiling: bool = False):
+async def load_model(request: Request, batch_size: int = 16, model_name: str = "Qwen/Qwen2.5-0.5B", max_length: int = 50, dtype: str = "bf16", profiling: bool = False):
+    # if dtype not in ["fp32", "fp16", "bf16"]:
+    #     raise HTTPException(status_code=400, detail="Invalid dtype. Supported values are 'fp32', 'fp16', and 'bf16'.")
+    # else:
+    #     if dtype == "fp32":
+    #         dtype = torch.float32
+    #     elif dtype == "fp16":
+    #         dtype = torch.float16
+    #     elif dtype == "bf16":
+    #         dtype = torch.bfloat16
+    valid_dtypes = {
+        "fp32": torch.float32,
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16
+    }
+    dtype = valid_dtypes.get(dtype.lower())
+    if dtype is None:
+        raise HTTPException(status_code=400, detail="Invalid dtype. Supported values are 'fp32', 'fp16', and 'bf16'.")
     try:
         if request.app.state.model is None:
             request.app.state.model = {}
@@ -33,7 +50,7 @@ async def load_model(request: Request, batch_size: int = 16, model_name: str = "
                 "max_length": max_length
             })
 
-        model = ChatModel(model_name, device=get_device())
+        model = ChatModel(model_name, device=get_device(), dtype=dtype)
         request.app.state.model[model_name] = model
         logger.info(f"Model '{model_name}' loaded successfully.")
         logger.info(f"Initializing ContinuousBatchingEngine for model '{model_name}'.")

@@ -1,7 +1,7 @@
 [project]
 name = "inference-from-scratch"
 version = "0.1.0"
-description = "An LLM inference server built from scratch in PyTorch + FastAPI, one benchmarked optimization at a time. KV cache, continuous batching, admission control, compared against vLLM."
+description = "An LLM inference server built from scratch in PyTorch + FastAPI, with step by step benchmarked optimizations. KV cache, continuous batching, admission control, compared against vLLM."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
