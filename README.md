@@ -1,4 +1,4 @@
-# Learning-Inference-Optimization
+# inference-from-scratch
 
 I am building an LLM inference server from scratch to learn how model serving works.
 Each step adds one optimization to the server. I benchmark it and write down what I learned.
