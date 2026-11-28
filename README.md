@@ -10,6 +10,8 @@ inside, and a benchmark board shows the effect of each change.
 My goal is to understand why production engines like vLLM are designed the way they are. I build
 a server without their features first, so I can see the problems those features solve.
 
+Read my blog about this here -> [https://www.shrirangmahajan.in/blogs/building-an-llm-inference-server-from-scratch](https://www.shrirangmahajan.in/blogs/building-an-llm-inference-server-from-scratch)
+
 ## Summary
 
 - **I built a continuous batching server from scratch.** It has a KV cache, static batching, a
